@@ -1,0 +1,22 @@
+[project]
+name = "t1"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "Francisco Rotilli", email = "francisco.r@edu.pucrs.br" },
+    { name = "Nícolas Durgante Vargas", email = "nicolas.v02@edu.pucrs.br" }
+]
+requires-python = ">=3.14"
+dependencies = [
+    "fastapi>=0.142.2",
+    "ruff>=0.16.10",
+    "ty>=0.0.84",
+]
+
+[project.scripts]
+app = "app:main"
+
+[build-system]
+requires = ["uv_build>=0.12.4,<0.13.0"]
+build-backend = "uv_build"
