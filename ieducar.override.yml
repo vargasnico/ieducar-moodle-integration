@@ -1,0 +1,6 @@
+# Ajustes aplicados por cima de i-educar/docker-compose.yml sem alterar o submodule.
+services:
+  horizon:
+    # No Windows (core.autocrlf=true) o shebang do artisan fica com CRLF
+    # ("php\r") e o container entra em restart loop; chamar o php direto evita isso.
+    command: php /var/www/ieducar/artisan horizon

@@ -1,0 +1,79 @@
+# Sobe a API FastAPI + i-Educar (submodule) + Moodle (Bitnami legacy).
+#
+# O i-Educar é incluído a partir do compose do próprio submodule, então os
+# serviços dele (nginx, fpm, php, horizon, postgres, redis) continuam sendo
+# configurados por i-educar/docker-compose.yml e i-educar/.env.
+
+include:
+  - path:
+      - i-educar/docker-compose.yml
+      - ieducar.override.yml
+    env_file: i-educar/.env
+
+services:
+
+  api:
+    container_name: integration-api
+    build: .
+    ports:
+      - ${API_PORT:-8000}:8000
+    environment:
+      IEDUCAR_URL: http://nginx
+      MOODLE_URL: http://moodle:8080
+    depends_on:
+      - nginx
+      - moodle
+    develop:
+      watch:
+        - action: sync+restart
+          path: ./src
+          target: /app/src
+        - action: rebuild
+          path: ./uv.lock
+
+  moodle-mariadb:
+    container_name: moodle-mariadb
+    image: bitnamilegacy/mariadb:11.8.3
+    environment:
+      MARIADB_USER: ${MOODLE_DATABASE_USER:-bn_moodle}
+      MARIADB_PASSWORD: ${MOODLE_DATABASE_PASSWORD:-moodle}
+      MARIADB_DATABASE: ${MOODLE_DATABASE_NAME:-bitnami_moodle}
+      MARIADB_ROOT_PASSWORD: ${MOODLE_DATABASE_ROOT_PASSWORD:-root}
+      MARIADB_CHARACTER_SET: utf8mb4
+      MARIADB_COLLATE: utf8mb4_unicode_ci
+    volumes:
+      - moodle_mariadb:/bitnami/mariadb
+    healthcheck:
+      test: ["CMD", "/opt/bitnami/scripts/mariadb/healthcheck.sh"]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+
+  moodle:
+    container_name: moodle
+    image: bitnamilegacy/moodle:5.0.2
+    ports:
+      - ${MOODLE_HTTP_PORT:-8080}:8080
+      - ${MOODLE_HTTPS_PORT:-8443}:8443
+    environment:
+      MOODLE_DATABASE_TYPE: mariadb
+      MOODLE_DATABASE_HOST: moodle-mariadb
+      MOODLE_DATABASE_PORT_NUMBER: 3306
+      MOODLE_DATABASE_USER: ${MOODLE_DATABASE_USER:-bn_moodle}
+      MOODLE_DATABASE_PASSWORD: ${MOODLE_DATABASE_PASSWORD:-moodle}
+      MOODLE_DATABASE_NAME: ${MOODLE_DATABASE_NAME:-bitnami_moodle}
+      MOODLE_USERNAME: ${MOODLE_USERNAME:-admin}
+      MOODLE_PASSWORD: ${MOODLE_PASSWORD:-admin123}
+      MOODLE_EMAIL: ${MOODLE_EMAIL:-admin@example.com}
+      MOODLE_SITE_NAME: ${MOODLE_SITE_NAME:-Moodle}
+    volumes:
+      - moodle_data:/bitnami/moodle
+      - moodledata_data:/bitnami/moodledata
+    depends_on:
+      moodle-mariadb:
+        condition: service_healthy
+
+volumes:
+  moodle_mariadb:
+  moodle_data:
+  moodledata_data:

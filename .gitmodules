@@ -1,0 +1,3 @@
+[submodule "i-educar"]
+	path = i-educar
+	url = https://github.com/portabilis/i-educar

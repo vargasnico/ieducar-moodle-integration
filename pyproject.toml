@@ -9,7 +9,7 @@ authors = [
 ]
 requires-python = ">=3.14"
 dependencies = [
-    "fastapi>=0.142.2",
+    "fastapi[standard]>=0.142.2",
     "ruff>=0.16.10",
     "ty>=0.0.84",
 ]
