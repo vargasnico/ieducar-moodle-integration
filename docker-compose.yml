@@ -1,8 +1,9 @@
-# Sobe a API FastAPI + i-Educar (submodule) + Moodle (Bitnami legacy).
+# Ambiente completo: aplicação de integração + i-Educar (submodule) + Moodle.
 #
 # O i-Educar é incluído a partir do compose do próprio submodule, então os
 # serviços dele (nginx, fpm, php, horizon, postgres, redis) continuam sendo
-# configurados por i-educar/docker-compose.yml e i-educar/.env.
+# configurados por i-educar/docker-compose.yml e i-educar/.env. Os ajustes
+# necessários para a integração ficam em ieducar.override.yml.
 
 include:
   - path:
@@ -12,17 +13,30 @@ include:
 
 services:
 
-  api:
-    container_name: integration-api
+  integration:
+    container_name: integration-app
     build: .
     ports:
       - ${API_PORT:-8000}:8000
     environment:
       IEDUCAR_URL: http://nginx
+      # Deve ser igual a "Chave de acesso" em Configurações > Configurações do sistema
+      # do i-Educar (tabela settings, chave legacy.apis.access_key).
+      IEDUCAR_ACCESS_KEY: ${IEDUCAR_ACCESS_KEY:-ieducar-access-key}
+      IEDUCAR_INSTITUICAO_ID: ${IEDUCAR_INSTITUICAO_ID:-1}
       MOODLE_URL: http://moodle:8080
+      MOODLE_SETUP_FILE: /shared/moodle.json
+      DATABASE_PATH: /data/integration.db
+      SYNC_INTERVAL_SECONDS: ${SYNC_INTERVAL_SECONDS:-300}
+    volumes:
+      - integration_data:/data
+      - integration_shared:/shared:ro
     depends_on:
-      - nginx
-      - moodle
+      nginx:
+        condition: service_started
+      moodle-setup:
+        condition: service_completed_successfully
+    restart: unless-stopped
     develop:
       watch:
         - action: sync+restart
@@ -72,8 +86,39 @@ services:
     depends_on:
       moodle-mariadb:
         condition: service_healthy
+    healthcheck:
+      # A primeira inicialização instala o Moodle e pode levar vários minutos.
+      test: ["CMD", "/opt/bitnami/php/bin/php", "-r", "exit(@file_get_contents('http://localhost:8080/login/index.php') === false ? 1 : 0);"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 10m
+
+  # Executa uma vez a cada `up`: habilita os Web Services REST do Moodle, cria o
+  # serviço e o token da integração e grava o resultado em /shared/moodle.json.
+  moodle-setup:
+    container_name: moodle-setup
+    image: bitnamilegacy/moodle:5.0.2
+    entrypoint: ["/bin/sh", "-c"]
+    # O PHP roda como o usuário do Apache (daemon) para não criar arquivos de
+    # cache como root no moodledata; a gravação em /shared é feita pelo root.
+    command:
+      - >-
+        su -s /bin/sh daemon -c '/opt/bitnami/php/bin/php /setup/setup_webservice.php'
+        > /shared/moodle.json.tmp && mv /shared/moodle.json.tmp /shared/moodle.json
+    volumes:
+      - moodle_data:/bitnami/moodle
+      - moodledata_data:/bitnami/moodledata
+      - ./moodle:/setup:ro
+      - integration_shared:/shared
+    depends_on:
+      moodle:
+        condition: service_healthy
+    restart: "no"
 
 volumes:
   moodle_mariadb:
   moodle_data:
   moodledata_data:
+  integration_data:
+  integration_shared:
