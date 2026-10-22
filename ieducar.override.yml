@@ -1,6 +1,24 @@
 # Ajustes aplicados por cima de i-educar/docker-compose.yml sem alterar o submodule.
+
+# Módulo de Relatórios do i-Educar (submodule i-educar-reports na raiz;
+# o caminho é relativo a i-educar/, diretório do compose incluído). Além dos PDFs,
+# ele fornece os modelos de boletim usados pelo cadastro de turmas, que quebra
+# sem o pacote. É montado onde o plug-and-play do i-Educar procura pacotes.
+x-reports-volume: &reports-volume
+  ../i-educar-reports:/var/www/ieducar/packages/portabilis/i-educar-reports-package
+
 services:
+  php:
+    volumes:
+      - *reports-volume
+
+  fpm:
+    volumes:
+      - *reports-volume
+
   horizon:
     # No Windows (core.autocrlf=true) o shebang do artisan fica com CRLF
     # ("php\r") e o container entra em restart loop; chamar o php direto evita isso.
     command: php /var/www/ieducar/artisan horizon
+    volumes:
+      - *reports-volume
