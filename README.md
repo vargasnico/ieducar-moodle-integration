@@ -33,7 +33,7 @@ flowchart LR
 | Serviço   | Imagem / origem                          | Porta no host |
 |-----------|------------------------------------------|---------------|
 | API       | `Dockerfile` deste repositório (Python 3.14) | `8000`    |
-| i-Educar  | submodule `i-educar` (tag `2.11.0`)      | `80` / `443`  |
+| i-Educar  | submodule `i-educar` (tag `2.11.0`) + Módulo de Relatórios (submodule `i-educar-reports`, branch `2.11`) | `80` / `443`  |
 | Moodle    | `bitnamilegacy/moodle:5.0.2`             | `8080` / `8443` |
 | MariaDB   | `bitnamilegacy/mariadb:11.8.3`           | —             |
 | PostgreSQL / Redis | definidos pelo compose do i-Educar | `5432` / `6379` |
@@ -46,14 +46,14 @@ flowchart LR
 
 ## Como executar
 
-**1. Clone com o submodule**
+**1. Clone com os submodules**
 
 ```bash
 git clone --recurse-submodules https://github.com/vargasnico/ieducar-moodle-integration.git
 cd ieducar-moodle-integration
 ```
 
-Se já clonou sem o submodule: `git submodule update --init`.
+Se já clonou sem os submodules: `git submodule update --init`.
 
 **2. Crie o `.env` do i-Educar**
 
@@ -71,11 +71,22 @@ docker compose up -d --build
 
 ```bash
 docker compose exec -u root php sh -c "find bootstrap/cache storage -type d -exec chmod 777 {} +"
+docker compose exec php composer config --global preferred-install.cossou/jasperphp source
 docker compose exec php composer new-install
 docker compose exec php php artisan db:seed
+docker compose exec php php artisan community:reports:install
+docker compose exec php php artisan vendor:publish --tag=reports-assets --ansi
 ```
 
-> O primeiro comando evita erros de permissão em volumes montados no Windows.
+> - O `chmod` evita erros de permissão em volumes montados no Windows.
+> - O `composer config` faz a dependência do Módulo de Relatórios (`cossou/jasperphp`, que traz
+>   o JasperStarter) ser instalada via `git clone`. Instalada pelo `.zip`, a extração falha no
+>   Windows com `Could not delete .../JasperStarter/lib`.
+> - O `new-install` já ativa o Módulo de Relatórios (via `composer plug-and-play`), pois o
+>   submodule `i-educar-reports` é montado em `i-educar/packages/portabilis/` pelo
+>   `ieducar.override.yml`. Os dois últimos comandos instalam os menus e os arquivos dele.
+>   Sem o módulo, o cadastro de turmas do i-Educar quebra
+>   (`Class "Portabilis_Model_Report_TipoBoletim" not found`).
 
 A primeira inicialização do Moodle leva alguns minutos; acompanhe com
 `docker compose logs -f moodle`.
@@ -85,7 +96,7 @@ A primeira inicialização do Moodle leva alguns minutos; acompanhe com
 | Sistema   | URL                              | Credenciais padrão        |
 |-----------|----------------------------------|---------------------------|
 | API (docs)| http://localhost:8000/docs       | —                         |
-| i-Educar  | http://localhost                 | definidas pelo seeder     |
+| i-Educar  | http://localhost                 | `admin` / `123456789`     |
 | Moodle    | http://localhost:8080            | `admin` / `admin123`      |
 
 Verificação rápida: `curl http://localhost:8000/health`
@@ -137,6 +148,7 @@ uv run ty check
 .
 ├── src/app/              # Código do microsserviço FastAPI
 ├── i-educar/             # Submodule do i-Educar (tag 2.11.0)
+├── i-educar-reports/     # Submodule do Módulo de Relatórios do i-Educar (branch 2.11)
 ├── Dockerfile            # Imagem da API
 ├── docker-compose.yml    # Orquestração: API + i-Educar + Moodle
 └── ieducar.override.yml  # Ajustes sobre o compose do i-Educar
@@ -148,6 +160,10 @@ uv run ty check
   CRLF no checkout do Windows. Já tratado pelo `ieducar.override.yml`; para evitar o
   problema em outros scripts, configure o submodule com
   `git -C i-educar config core.autocrlf false` antes do checkout.
+- **Cadastro de turma com erro `Portabilis_Model_Report_TipoBoletim not found`** — o Módulo
+  de Relatórios não está ativo. Confira se o submodule `i-educar-reports` foi baixado
+  (`git submodule update --init`) e rode `composer plug-and-play`,
+  `artisan community:reports:install` e `vendor:publish --tag=reports-assets` no container `php`.
 - **Portas em uso** — altere `DOCKER_NGINX_PORT`, `DOCKER_POSTGRES_PORT` etc. em
   `i-educar/.env`, ou as variáveis da tabela acima.
 

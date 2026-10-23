@@ -1,3 +1,7 @@
 [submodule "i-educar"]
 	path = i-educar
 	url = https://github.com/portabilis/i-educar
+[submodule "i-educar-reports"]
+	path = i-educar-reports
+	url = https://github.com/portabilis/i-educar-reports-package.git
+	branch = 2.11
