@@ -13,7 +13,7 @@ require_once($CFG->libdir . '/accesslib.php');
 const SERVICE_NAME = 'iEducar Integration';
 const SERVICE_SHORTNAME = 'ieducar_integration';
 const CATEGORY_IDNUMBER = 'ieducar';
-const TEACHER_ROLE = 'editingteacher';
+const ROLES = ['editingteacher', 'teacher', 'student'];
 
 // Funções expostas ao microsserviço. As de curso/matrícula já ficam liberadas
 // para os próximos casos (turmas, componentes curriculares e alunos).
@@ -69,26 +69,30 @@ foreach (SERVICE_FUNCTIONS as $function) {
     }
 }
 
-// 3. Categoria onde ficam os cursos e a atribuição de professores do i-Educar.
+// 3. Categoria onde ficam os cursos sincronizados do i-Educar.
 $category = $DB->get_record('course_categories', ['idnumber' => CATEGORY_IDNUMBER]);
 if (!$category) {
     $category = core_course_category::create([
         'name' => 'iEducar',
         'idnumber' => CATEGORY_IDNUMBER,
         'parent' => 0,
-        'description' => 'Cursos e professores sincronizados a partir do i-Educar.',
+        'description' => 'Cursos sincronizados a partir do i-Educar.',
     ]);
     info('Categoria iEducar criada');
 }
-$categorycontext = context_coursecat::instance($category->id);
 
-// 4. Permite atribuir o papel de professor no contexto de categoria.
-$role = $DB->get_record('role', ['shortname' => TEACHER_ROLE], '*', MUST_EXIST);
-$levels = array_values(get_role_contextlevels($role->id));
-if (!in_array(CONTEXT_COURSECAT, $levels)) {
-    $levels[] = CONTEXT_COURSECAT;
-    set_role_contextlevels($role->id, $levels);
-    info('Papel editingteacher liberado no contexto de categoria');
+// 4. Papéis usados nas inscrições em cursos (casos de turmas e alunos).
+//    O professor recebe o papel no curso de cada componente que leciona, nunca
+//    na categoria inteira. Versões anteriores deste script liberavam o papel de
+//    professor no contexto de categoria; isso é revertido para o padrão do Moodle.
+$roleids = [];
+foreach (ROLES as $shortname) {
+    $roleids[$shortname] = (int) $DB->get_field('role', 'id', ['shortname' => $shortname], MUST_EXIST);
+}
+$levels = array_values(get_role_contextlevels($roleids['editingteacher']));
+if (in_array(CONTEXT_COURSECAT, $levels)) {
+    set_role_contextlevels($roleids['editingteacher'], array_diff($levels, [CONTEXT_COURSECAT]));
+    info('Papel editingteacher restrito novamente a cursos (padrão do Moodle)');
 }
 
 // 5. Token permanente do administrador para o serviço.
@@ -114,7 +118,6 @@ info('Token disponível');
 echo json_encode([
     'token' => $tokenvalue,
     'service' => SERVICE_SHORTNAME,
-    'teacher_role_id' => (int) $role->id,
+    'role_ids' => $roleids,
     'category_id' => (int) $category->id,
-    'category_context_id' => (int) $categorycontext->id,
 ], JSON_PRETTY_PRINT) . "\n";

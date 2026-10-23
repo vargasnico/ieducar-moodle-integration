@@ -72,10 +72,15 @@ async def health_dependencias(request: Request) -> dict[str, Any]:
     sync = _sync(request)
     checks: dict[str, Any] = {}
     try:
-        servidores = await sync.ieducar().listar_servidores(modified="2999-01-01")
+        ieducar = sync.ieducar()
+        escolas = [e for e in await ieducar.listar_escolas() if e.ativo]
+        anos = {
+            e.nome: await ieducar.ano_letivo_em_andamento(e.escola_id) for e in escolas
+        }
         checks["ieducar"] = {
             "ok": True,
-            "detalhe": f"API acessível ({len(servidores)})",
+            "detalhe": "API acessível",
+            "escolas_ativas": anos,
         }
     except (IEducarError, httpx.HTTPError, ValueError) as exc:
         checks["ieducar"] = {"ok": False, "detalhe": str(exc)}

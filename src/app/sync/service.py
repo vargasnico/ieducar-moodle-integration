@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 from dataclasses import asdict
+from datetime import timedelta
 
 import httpx
 
@@ -56,13 +57,16 @@ class SyncService:
         async with self._lock:
             run_id = self._repo.start_run("professores", trigger)
             try:
-                setup = load_moodle_setup(self._settings)
                 sync = ProfessorSync(
                     self.ieducar(),
-                    MoodleClient(self._moodle_http, setup.token),
+                    self.moodle(),
                     self._repo,
-                    setup,
                     self._settings.placeholder_email_domain,
+                    escola_id=self._settings.ieducar_escola_id,
+                    ano_letivo=self._settings.ieducar_ano_letivo,
+                    cursor_overlap=timedelta(
+                        hours=self._settings.sync_cursor_overlap_hours
+                    ),
                 )
                 result = await sync.run(completo=completo)
             except (

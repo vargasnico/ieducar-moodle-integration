@@ -24,10 +24,14 @@ services:
       # do i-Educar (tabela settings, chave legacy.apis.access_key).
       IEDUCAR_ACCESS_KEY: ${IEDUCAR_ACCESS_KEY:-ieducar-access-key}
       IEDUCAR_INSTITUICAO_ID: ${IEDUCAR_INSTITUICAO_ID:-1}
+      IEDUCAR_ESCOLA_ID: ${IEDUCAR_ESCOLA_ID:-}
+      IEDUCAR_ANO_LETIVO: ${IEDUCAR_ANO_LETIVO:-}
       MOODLE_URL: http://moodle:8080
       MOODLE_SETUP_FILE: /shared/moodle.json
       DATABASE_PATH: /data/integration.db
       SYNC_INTERVAL_SECONDS: ${SYNC_INTERVAL_SECONDS:-300}
+      SYNC_CURSOR_OVERLAP_HOURS: ${SYNC_CURSOR_OVERLAP_HOURS:-24}
+      MOODLE_TOKEN: ${MOODLE_TOKEN:-}
     volumes:
       - integration_data:/data
       - integration_shared:/shared:ro

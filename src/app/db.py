@@ -16,6 +16,21 @@ CREATE TABLE IF NOT EXISTS professor_mapping (
     synced_at          TEXT    NOT NULL
 );
 
+-- Cópia local dos vínculos professor ↔ turma do i-Educar. A API só devolve os
+-- vínculos alterados desde o cursor; guardá-los permite saber se um servidor
+-- ainda tem alguma turma depois de perder uma.
+CREATE TABLE IF NOT EXISTS professor_vinculo (
+    vinculo_id  INTEGER PRIMARY KEY,
+    servidor_id INTEGER NOT NULL,
+    turma_id    INTEGER NOT NULL,
+    ano         INTEGER NOT NULL,
+    componentes TEXT    NOT NULL,
+    ativo       INTEGER NOT NULL,
+    updated_at  TEXT    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS professor_vinculo_servidor
+    ON professor_vinculo (servidor_id, ano);
+
 CREATE TABLE IF NOT EXISTS sync_state (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -118,6 +133,50 @@ class Repository:
                 """,
                 (servidor_id, moodle_user_id, username, int(ativo), updated_at, now()),
             )
+
+    def save_vinculo(
+        self,
+        vinculo_id: int,
+        servidor_id: int,
+        turma_id: int,
+        ano: int,
+        componentes: tuple[int, ...],
+        ativo: bool,
+        updated_at: str,
+    ) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO professor_vinculo
+                    (vinculo_id, servidor_id, turma_id, ano, componentes, ativo, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(vinculo_id) DO UPDATE SET
+                    servidor_id = excluded.servidor_id,
+                    turma_id = excluded.turma_id,
+                    ano = excluded.ano,
+                    componentes = excluded.componentes,
+                    ativo = excluded.ativo,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    vinculo_id,
+                    servidor_id,
+                    turma_id,
+                    ano,
+                    ",".join(str(c) for c in componentes),
+                    int(ativo),
+                    updated_at,
+                ),
+            )
+
+    def count_turmas_ativas(self, servidor_id: int, ano: int) -> int:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT COUNT(DISTINCT turma_id) AS n FROM professor_vinculo"
+                " WHERE servidor_id = ? AND ano = ? AND ativo = 1",
+                (servidor_id, ano),
+            ).fetchone()
+        return int(row["n"])
 
     def start_run(self, entity: str, trigger: str) -> int:
         with self._connect() as conn:
