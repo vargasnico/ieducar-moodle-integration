@@ -6,52 +6,42 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+# Colunas declaradas BOOLEAN voltam como bool.
+sqlite3.register_converter("BOOLEAN", lambda valor: valor == b"1")
+
 SCHEMA = """
-CREATE TABLE IF NOT EXISTS professor_mapping (
-    servidor_id        INTEGER PRIMARY KEY,
+-- Usuário do Moodle de cada servidor (professor) ou aluno do i-Educar.
+CREATE TABLE IF NOT EXISTS usuario (
+    tipo               TEXT    NOT NULL,  -- professor | aluno
+    origem_id          INTEGER NOT NULL,  -- servidor_id ou aluno_id no i-Educar
     moodle_user_id     INTEGER NOT NULL UNIQUE,
     moodle_username    TEXT    NOT NULL,
-    ativo              INTEGER NOT NULL,
+    ativo              BOOLEAN NOT NULL,
     ieducar_updated_at TEXT    NOT NULL,
-    synced_at          TEXT    NOT NULL
+    synced_at          TEXT    NOT NULL,
+    PRIMARY KEY (tipo, origem_id)
 );
 
 -- Curso do Moodle de cada turma × componente curricular do i-Educar.
-CREATE TABLE IF NOT EXISTS curso_mapping (
+CREATE TABLE IF NOT EXISTS curso (
     turma_id         INTEGER NOT NULL,
     componente_id    INTEGER NOT NULL,
     ano              INTEGER NOT NULL,
     moodle_course_id INTEGER NOT NULL UNIQUE,
     fullname         TEXT    NOT NULL,
-    visible          INTEGER NOT NULL,
+    visible          BOOLEAN NOT NULL,
     synced_at        TEXT    NOT NULL,
     PRIMARY KEY (turma_id, componente_id)
 );
 
--- Inscrições de professores feitas pela integração. Só estas são desfeitas:
--- inscrições criadas à mão no Moodle não são tocadas.
-CREATE TABLE IF NOT EXISTS professor_inscricao (
+-- Inscrições feitas pela integração. Só estas são desfeitas: inscrições criadas
+-- à mão no Moodle não são tocadas.
+CREATE TABLE IF NOT EXISTS inscricao (
+    papel            TEXT    NOT NULL,  -- editingteacher | student
     moodle_course_id INTEGER NOT NULL,
     moodle_user_id   INTEGER NOT NULL,
     synced_at        TEXT    NOT NULL,
-    PRIMARY KEY (moodle_course_id, moodle_user_id)
-);
-
-CREATE TABLE IF NOT EXISTS aluno_mapping (
-    aluno_id           INTEGER PRIMARY KEY,
-    moodle_user_id     INTEGER NOT NULL UNIQUE,
-    moodle_username    TEXT    NOT NULL,
-    ativo              INTEGER NOT NULL,
-    ieducar_updated_at TEXT    NOT NULL,
-    synced_at          TEXT    NOT NULL
-);
-
--- Inscrições de alunos feitas pela integração (mesma regra das de professores).
-CREATE TABLE IF NOT EXISTS aluno_inscricao (
-    moodle_course_id INTEGER NOT NULL,
-    moodle_user_id   INTEGER NOT NULL,
-    synced_at        TEXT    NOT NULL,
-    PRIMARY KEY (moodle_course_id, moodle_user_id)
+    PRIMARY KEY (papel, moodle_course_id, moodle_user_id)
 );
 
 CREATE TABLE IF NOT EXISTS sync_run (
@@ -65,24 +55,18 @@ CREATE TABLE IF NOT EXISTS sync_run (
 );
 """
 
+# Inscrição: (moodle_course_id, moodle_user_id).
+Par = tuple[int, int]
+
 
 def now() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
 
 
 @dataclass(frozen=True)
-class ProfessorMapping:
-    servidor_id: int
-    moodle_user_id: int
-    moodle_username: str
-    ativo: bool
-    ieducar_updated_at: str
-    synced_at: str
-
-
-@dataclass(frozen=True)
-class AlunoMapping:
-    aluno_id: int
+class UsuarioMapping:
+    tipo: str
+    origem_id: int
     moodle_user_id: int
     moodle_username: str
     ativo: bool
@@ -102,7 +86,7 @@ class CursoMapping:
 
 
 class Repository:
-    """Persistência local da integração: mapeamento i-Educar ↔ Moodle e estado das sincronizações."""
+    """Persistência local da integração: mapeamento i-Educar ↔ Moodle e histórico das execuções."""
 
     def __init__(self, path: Path) -> None:
         self._path = path
@@ -112,7 +96,7 @@ class Repository:
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
-        conn = sqlite3.connect(self._path)
+        conn = sqlite3.connect(self._path, detect_types=sqlite3.PARSE_DECLTYPES)
         conn.row_factory = sqlite3.Row
         try:
             with conn:
@@ -120,63 +104,65 @@ class Repository:
         finally:
             conn.close()
 
-    def get_professor(self, servidor_id: int) -> ProfessorMapping | None:
+    def _query(self, sql: str, *params: Any) -> list[sqlite3.Row]:
         with self._connect() as conn:
-            row = conn.execute(
-                "SELECT * FROM professor_mapping WHERE servidor_id = ?", (servidor_id,)
-            ).fetchone()
-        return _to_mapping(row) if row else None
+            return conn.execute(sql, params).fetchall()
 
-    def list_professores(self) -> list[ProfessorMapping]:
+    def _execute(self, sql: str, *params: Any) -> int:
+        """Executa um comando e devolve o id da linha inserida, se houver."""
         with self._connect() as conn:
-            rows = conn.execute(
-                "SELECT * FROM professor_mapping ORDER BY servidor_id"
-            ).fetchall()
-        return [_to_mapping(r) for r in rows]
+            return conn.execute(sql, params).lastrowid or 0
 
-    def save_professor(
+    def _upsert(self, tabela: str, chave: tuple[str, ...], **valores: Any) -> None:
+        """Insere a linha ou, se a chave já existe, atualiza as demais colunas."""
+        valores["synced_at"] = now()
+        atualizar = ", ".join(f"{c} = excluded.{c}" for c in valores if c not in chave)
+        self._execute(
+            f"INSERT INTO {tabela} ({', '.join(valores)})"
+            f" VALUES ({', '.join('?' * len(valores))})"
+            f" ON CONFLICT ({', '.join(chave)}) DO UPDATE SET {atualizar}",
+            *valores.values(),
+        )
+
+    def list_usuarios(self, tipo: str) -> list[UsuarioMapping]:
+        rows = self._query(
+            "SELECT * FROM usuario WHERE tipo = ? ORDER BY origem_id", tipo
+        )
+        return [UsuarioMapping(**r) for r in rows]
+
+    def save_usuario(
         self,
-        servidor_id: int,
+        tipo: str,
+        origem_id: int,
         moodle_user_id: int,
-        username: str,
+        moodle_username: str,
         ativo: bool,
-        updated_at: str,
+        ieducar_updated_at: str,
     ) -> None:
-        with self._connect() as conn:
-            conn.execute(
-                """
-                INSERT INTO professor_mapping
-                    (servidor_id, moodle_user_id, moodle_username, ativo, ieducar_updated_at, synced_at)
-                VALUES (?, ?, ?, ?, ?, ?)
-                ON CONFLICT(servidor_id) DO UPDATE SET
-                    moodle_user_id = excluded.moodle_user_id,
-                    moodle_username = excluded.moodle_username,
-                    ativo = excluded.ativo,
-                    ieducar_updated_at = excluded.ieducar_updated_at,
-                    synced_at = excluded.synced_at
-                """,
-                (servidor_id, moodle_user_id, username, int(ativo), updated_at, now()),
-            )
+        self._upsert(
+            "usuario",
+            ("tipo", "origem_id"),
+            tipo=tipo,
+            origem_id=origem_id,
+            moodle_user_id=moodle_user_id,
+            moodle_username=moodle_username,
+            ativo=ativo,
+            ieducar_updated_at=ieducar_updated_at,
+        )
 
-    def delete_professor(self, servidor_id: int) -> None:
-        with self._connect() as conn:
-            conn.execute(
-                "DELETE FROM professor_mapping WHERE servidor_id = ?", (servidor_id,)
-            )
+    def delete_usuario(self, tipo: str, origem_id: int) -> None:
+        self._execute(
+            "DELETE FROM usuario WHERE tipo = ? AND origem_id = ?", tipo, origem_id
+        )
 
     def list_cursos(self, ano: int | None = None) -> list[CursoMapping]:
-        with self._connect() as conn:
-            if ano is None:
-                rows = conn.execute(
-                    "SELECT * FROM curso_mapping ORDER BY turma_id, componente_id"
-                ).fetchall()
-            else:
-                rows = conn.execute(
-                    "SELECT * FROM curso_mapping WHERE ano = ?"
-                    " ORDER BY turma_id, componente_id",
-                    (ano,),
-                ).fetchall()
-        return [_to_curso(r) for r in rows]
+        rows = self._query(
+            "SELECT * FROM curso WHERE ? IS NULL OR ano = ?"
+            " ORDER BY turma_id, componente_id",
+            ano,
+            ano,
+        )
+        return [CursoMapping(**r) for r in rows]
 
     def save_curso(
         self,
@@ -187,183 +173,67 @@ class Repository:
         fullname: str,
         visible: bool,
     ) -> None:
-        with self._connect() as conn:
-            conn.execute(
-                """
-                INSERT INTO curso_mapping
-                    (turma_id, componente_id, ano, moodle_course_id, fullname, visible, synced_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(turma_id, componente_id) DO UPDATE SET
-                    ano = excluded.ano,
-                    moodle_course_id = excluded.moodle_course_id,
-                    fullname = excluded.fullname,
-                    visible = excluded.visible,
-                    synced_at = excluded.synced_at
-                """,
-                (
-                    turma_id,
-                    componente_id,
-                    ano,
-                    moodle_course_id,
-                    fullname,
-                    int(visible),
-                    now(),
-                ),
-            )
+        self._upsert(
+            "curso",
+            ("turma_id", "componente_id"),
+            turma_id=turma_id,
+            componente_id=componente_id,
+            ano=ano,
+            moodle_course_id=moodle_course_id,
+            fullname=fullname,
+            visible=visible,
+        )
 
-    def delete_curso(self, turma_id: int, componente_id: int) -> None:
+    def delete_curso(self, curso: CursoMapping) -> None:
+        """Esquece um curso que não existe mais no Moodle, com as suas inscrições."""
         with self._connect() as conn:
-            conn.execute(
-                "DELETE FROM curso_mapping WHERE turma_id = ? AND componente_id = ?",
-                (turma_id, componente_id),
-            )
-
-    def list_professor_inscricoes(self) -> set[tuple[int, int]]:
-        """(moodle_course_id, moodle_user_id) das inscrições feitas pela integração."""
-        with self._connect() as conn:
-            rows = conn.execute(
-                "SELECT moodle_course_id, moodle_user_id FROM professor_inscricao"
-            ).fetchall()
-        return {(int(r["moodle_course_id"]), int(r["moodle_user_id"])) for r in rows}
-
-    def save_professor_inscricoes(self, pares: Iterable[tuple[int, int]]) -> None:
-        """Grava pares (moodle_course_id, moodle_user_id)."""
-        agora = now()
-        with self._connect() as conn:
-            conn.executemany(
-                "INSERT OR REPLACE INTO professor_inscricao"
-                " (moodle_course_id, moodle_user_id, synced_at) VALUES (?, ?, ?)",
-                ((course_id, user_id, agora) for course_id, user_id in pares),
-            )
-
-    def delete_professor_inscricoes(self, pares: Iterable[tuple[int, int]]) -> None:
-        """Remove pares (moodle_course_id, moodle_user_id)."""
-        with self._connect() as conn:
-            conn.executemany(
-                "DELETE FROM professor_inscricao"
-                " WHERE moodle_course_id = ? AND moodle_user_id = ?",
-                pares,
-            )
-
-    def delete_inscricoes_do_curso(self, course_id: int) -> None:
-        """Esquece as inscrições de um curso que não existe mais no Moodle."""
-        with self._connect() as conn:
-            for tabela in ("professor_inscricao", "aluno_inscricao"):
+            for tabela in ("curso", "inscricao"):
                 conn.execute(
-                    f"DELETE FROM {tabela} WHERE moodle_course_id = ?", (course_id,)
+                    f"DELETE FROM {tabela} WHERE moodle_course_id = ?",
+                    (curso.moodle_course_id,),
                 )
 
-    def list_alunos(self) -> list[AlunoMapping]:
-        with self._connect() as conn:
-            rows = conn.execute(
-                "SELECT * FROM aluno_mapping ORDER BY aluno_id"
-            ).fetchall()
-        return [
-            AlunoMapping(
-                aluno_id=r["aluno_id"],
-                moodle_user_id=r["moodle_user_id"],
-                moodle_username=r["moodle_username"],
-                ativo=bool(r["ativo"]),
-                ieducar_updated_at=r["ieducar_updated_at"],
-                synced_at=r["synced_at"],
-            )
-            for r in rows
-        ]
+    def list_inscricoes(self, papel: str) -> set[Par]:
+        rows = self._query(
+            "SELECT moodle_course_id, moodle_user_id FROM inscricao WHERE papel = ?",
+            papel,
+        )
+        return {(r["moodle_course_id"], r["moodle_user_id"]) for r in rows}
 
-    def save_aluno(
-        self,
-        aluno_id: int,
-        moodle_user_id: int,
-        username: str,
-        ativo: bool,
-        updated_at: str,
-    ) -> None:
-        with self._connect() as conn:
-            conn.execute(
-                """
-                INSERT INTO aluno_mapping
-                    (aluno_id, moodle_user_id, moodle_username, ativo, ieducar_updated_at, synced_at)
-                VALUES (?, ?, ?, ?, ?, ?)
-                ON CONFLICT(aluno_id) DO UPDATE SET
-                    moodle_user_id = excluded.moodle_user_id,
-                    moodle_username = excluded.moodle_username,
-                    ativo = excluded.ativo,
-                    ieducar_updated_at = excluded.ieducar_updated_at,
-                    synced_at = excluded.synced_at
-                """,
-                (aluno_id, moodle_user_id, username, int(ativo), updated_at, now()),
-            )
-
-    def delete_aluno(self, aluno_id: int) -> None:
-        with self._connect() as conn:
-            conn.execute("DELETE FROM aluno_mapping WHERE aluno_id = ?", (aluno_id,))
-
-    def list_aluno_inscricoes(self) -> set[tuple[int, int]]:
-        """(moodle_course_id, moodle_user_id) das inscrições de alunos da integração."""
-        with self._connect() as conn:
-            rows = conn.execute(
-                "SELECT moodle_course_id, moodle_user_id FROM aluno_inscricao"
-            ).fetchall()
-        return {(int(r["moodle_course_id"]), int(r["moodle_user_id"])) for r in rows}
-
-    def save_aluno_inscricoes(self, pares: Iterable[tuple[int, int]]) -> None:
+    def save_inscricoes(self, papel: str, pares: Iterable[Par]) -> None:
         agora = now()
         with self._connect() as conn:
             conn.executemany(
-                "INSERT OR REPLACE INTO aluno_inscricao"
-                " (moodle_course_id, moodle_user_id, synced_at) VALUES (?, ?, ?)",
-                ((course_id, user_id, agora) for course_id, user_id in pares),
+                "INSERT OR REPLACE INTO inscricao VALUES (?, ?, ?, ?)",
+                ((papel, course_id, user_id, agora) for course_id, user_id in pares),
             )
 
-    def delete_aluno_inscricoes(self, pares: Iterable[tuple[int, int]]) -> None:
+    def delete_inscricoes(self, papel: str, pares: Iterable[Par]) -> None:
         with self._connect() as conn:
             conn.executemany(
-                "DELETE FROM aluno_inscricao"
-                " WHERE moodle_course_id = ? AND moodle_user_id = ?",
-                pares,
+                "DELETE FROM inscricao"
+                " WHERE papel = ? AND moodle_course_id = ? AND moodle_user_id = ?",
+                ((papel, course_id, user_id) for course_id, user_id in pares),
             )
 
     def start_run(self, entity: str, trigger: str) -> int:
-        with self._connect() as conn:
-            cur = conn.execute(
-                "INSERT INTO sync_run (entity, trigger, started_at, status) VALUES (?, ?, ?, 'running')",
-                (entity, trigger, now()),
-            )
-        return int(cur.lastrowid or 0)
+        return self._execute(
+            "INSERT INTO sync_run (entity, trigger, started_at, status)"
+            " VALUES (?, ?, ?, 'running')",
+            entity,
+            trigger,
+            now(),
+        )
 
     def finish_run(self, run_id: int, status: str, summary: str) -> None:
-        with self._connect() as conn:
-            conn.execute(
-                "UPDATE sync_run SET finished_at = ?, status = ?, summary = ? WHERE id = ?",
-                (now(), status, summary, run_id),
-            )
+        self._execute(
+            "UPDATE sync_run SET finished_at = ?, status = ?, summary = ? WHERE id = ?",
+            now(),
+            status,
+            summary,
+            run_id,
+        )
 
     def list_runs(self, limit: int = 20) -> list[dict[str, Any]]:
-        with self._connect() as conn:
-            rows = conn.execute(
-                "SELECT * FROM sync_run ORDER BY id DESC LIMIT ?", (limit,)
-            ).fetchall()
+        rows = self._query("SELECT * FROM sync_run ORDER BY id DESC LIMIT ?", limit)
         return [dict(r) for r in rows]
-
-
-def _to_curso(row: sqlite3.Row) -> CursoMapping:
-    return CursoMapping(
-        turma_id=row["turma_id"],
-        componente_id=row["componente_id"],
-        ano=row["ano"],
-        moodle_course_id=row["moodle_course_id"],
-        fullname=row["fullname"],
-        visible=bool(row["visible"]),
-        synced_at=row["synced_at"],
-    )
-
-
-def _to_mapping(row: sqlite3.Row) -> ProfessorMapping:
-    return ProfessorMapping(
-        servidor_id=row["servidor_id"],
-        moodle_user_id=row["moodle_user_id"],
-        moodle_username=row["moodle_username"],
-        ativo=bool(row["ativo"]),
-        ieducar_updated_at=row["ieducar_updated_at"],
-        synced_at=row["synced_at"],
-    )

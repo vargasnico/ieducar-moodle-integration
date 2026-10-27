@@ -1,7 +1,10 @@
+import logging
 from dataclasses import dataclass
 from typing import Any
 
 import httpx
+
+log = logging.getLogger(__name__)
 
 
 class IEducarError(Exception):
@@ -229,13 +232,21 @@ class IEducarClient:
         self, escola_id: int, serie_id: int, ano: int
     ) -> list[ComponenteCurricular]:
         """Componentes curriculares que a escola oferece na série (Séries da escola)."""
-        data = await self._get(
-            "ComponenteCurricular",
-            "componentes-curriculares-escola-serie-ano",
-            escola_id=escola_id,
-            serie_id=serie_id,
-            ano=ano,
-        )
+        try:
+            data = await self._get(
+                "ComponenteCurricular",
+                "componentes-curriculares-escola-serie-ano",
+                escola_id=escola_id,
+                serie_id=serie_id,
+                ano=ano,
+            )
+        except IEducarError as exc:
+            # Só esta resposta significa "sem componentes": tratar qualquer erro
+            # assim ocultaria todos os cursos da série.
+            if "não está vinculado ao ano letivo" not in str(exc):
+                raise
+            log.warning("Sem componentes na escola %s, série %s", escola_id, serie_id)
+            return []
         return [
             ComponenteCurricular(
                 componente_id=int(c["id"]),

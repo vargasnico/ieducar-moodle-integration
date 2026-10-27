@@ -11,9 +11,10 @@ from app.clients.ieducar import IEducarClient
 from app.clients.moodle import MoodleClient
 from app.config import MoodleSetup, Settings, load_moodle_setup
 from app.db import Repository
-from app.sync.alunos import AlunoSync, AlunoSyncResult
-from app.sync.professores import ProfessorSync, SyncResult
-from app.sync.turmas import TurmaSync, TurmaSyncResult
+from app.sync.alunos import AlunoSync
+from app.sync.base import Resultado, Sincronizacao
+from app.sync.professores import ProfessorSync
+from app.sync.turmas import TurmaSync
 
 log = logging.getLogger(__name__)
 
@@ -78,53 +79,30 @@ class SyncService:
             )
             return result
 
-    async def sync_professores(
-        self, trigger: str, completo: bool = False
-    ) -> SyncResult:
-        def run() -> Awaitable[SyncResult]:
-            return ProfessorSync(
-                self.ieducar(),
-                self.moodle(),
-                self._repo,
-                self._settings.placeholder_email_domain,
-                escola_id=self._settings.ieducar_escola_id,
-                ano_letivo=self._settings.ieducar_ano_letivo,
-            ).run(completo=completo)
-
-        return await self._executar("professores", trigger, run)
-
-    async def sync_turmas(
-        self, trigger: str, completo: bool = False
-    ) -> TurmaSyncResult:
-        def run() -> Awaitable[TurmaSyncResult]:
+    async def _sincronizar(
+        self, entity: str, trigger: str, classe: type[Sincronizacao], completo: bool
+    ) -> Resultado:
+        def run() -> Awaitable[Resultado]:
             setup = load_moodle_setup(self._settings)
-            return TurmaSync(
+            return classe(
                 self.ieducar(),
                 self.moodle(setup),
                 self._repo,
                 setup,
-                escola_id=self._settings.ieducar_escola_id,
-                ano_letivo=self._settings.ieducar_ano_letivo,
-            ).run(completo=completo)
+                self._settings,
+                completo,
+            ).run()
 
-        return await self._executar("turmas", trigger, run)
+        return await self._executar(entity, trigger, run)
 
-    async def sync_alunos(
-        self, trigger: str, completo: bool = False
-    ) -> AlunoSyncResult:
-        def run() -> Awaitable[AlunoSyncResult]:
-            setup = load_moodle_setup(self._settings)
-            return AlunoSync(
-                self.ieducar(),
-                self.moodle(setup),
-                self._repo,
-                setup,
-                self._settings.placeholder_email_domain,
-                escola_id=self._settings.ieducar_escola_id,
-                ano_letivo=self._settings.ieducar_ano_letivo,
-            ).run(completo=completo)
+    async def sync_professores(self, trigger: str, completo: bool = False) -> Resultado:
+        return await self._sincronizar("professores", trigger, ProfessorSync, completo)
 
-        return await self._executar("alunos", trigger, run)
+    async def sync_turmas(self, trigger: str, completo: bool = False) -> Resultado:
+        return await self._sincronizar("turmas", trigger, TurmaSync, completo)
+
+    async def sync_alunos(self, trigger: str, completo: bool = False) -> Resultado:
+        return await self._sincronizar("alunos", trigger, AlunoSync, completo)
 
     async def run_periodically(self, interval: int) -> None:
         # Em ordem de dependência: as inscrições de professores usam os usuários e os

@@ -52,6 +52,11 @@ info('Web services REST habilitados');
 set_config('noemailever', 1);
 info('Envio de e-mails desativado (noemailever)');
 
+// O e-mail vem do i-Educar e pode se repetir (irmãos com o e-mail do responsável,
+// servidor que também é aluno). Sem isso o Moodle recusa o usuário inteiro.
+set_config('allowaccountssameemail', 1);
+info('E-mail repetido entre usuários permitido (allowaccountssameemail)');
+
 // 2. Serviço externo com as funções da integração.
 $service = $DB->get_record('external_services', ['shortname' => SERVICE_SHORTNAME]);
 if (!$service) {

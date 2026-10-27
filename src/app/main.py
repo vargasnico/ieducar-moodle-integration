@@ -157,7 +157,7 @@ def listar_execucoes(request: Request, limit: int = 20) -> dict[str, Any]:
 @app.get("/professores", tags=["mapeamentos"])
 def listar_professores(request: Request) -> list[dict[str, Any]]:
     """Mapeamento servidor do i-Educar ↔ usuário do Moodle."""
-    return [asdict(p) for p in _repo(request).list_professores()]
+    return [asdict(p) for p in _repo(request).list_usuarios("professor")]
 
 
 @app.get("/cursos", tags=["mapeamentos"])
@@ -169,4 +169,4 @@ def listar_cursos(request: Request, ano: int | None = None) -> list[dict[str, An
 @app.get("/alunos", tags=["mapeamentos"])
 def listar_alunos(request: Request) -> list[dict[str, Any]]:
     """Mapeamento aluno do i-Educar ↔ usuário do Moodle."""
-    return [asdict(a) for a in _repo(request).list_alunos()]
+    return [asdict(a) for a in _repo(request).list_usuarios("aluno")]
