@@ -128,8 +128,26 @@ docker compose exec -T -u root php sh -c '
   find bootstrap/cache storage -type d -exec chmod 777 {} +'
 # A dependência do Módulo de Relatórios via .zip falha ao extrair no Windows.
 ieducar composer config --global preferred-install.cossou/jasperphp source
-ieducar composer install --no-interaction --no-progress
-ieducar composer plug-and-play
+# O `composer install` só é preciso na primeira vez, para instalar o próprio plugin
+# plug-and-play: depois disso o plug-and-play instala tudo a partir do lock dele. Rodar
+# os dois sempre faz o install remover o Módulo de Relatórios (o composer.json do
+# i-Educar não o conhece) e o plug-and-play reinstalá-lo, quase 2 minutos a cada vez.
+[[ -d i-educar/vendor/dex/composer-plug-and-play ]] ||
+  ieducar composer install --no-interaction --no-progress
+# Mesmo sem nada a instalar, o plug-and-play leva quase 1 minuto (gera o autoload de
+# novo); só roda se o módulo não estiver instalado ou se algum composer mudou desde o
+# último plug-and-play bem-sucedido. O marcador fica em vendor/, ignorado pelo Git (o
+# Composer só reescreve o autoload quando o conteúdo muda, então ele não serve de data).
+marcador=i-educar/vendor/.plug-and-play-ok
+if [[ -e i-educar/vendor/portabilis/i-educar-reports-package &&
+  $marcador -nt i-educar/composer.lock &&
+  $marcador -nt i-educar/composer.json &&
+  $marcador -nt i-educar-reports/composer.json ]]; then
+  info "dependências do i-Educar e do Módulo de Relatórios já instaladas"
+else
+  ieducar composer plug-and-play
+  touch "$marcador"
+fi
 grep -q '^APP_KEY=..*' i-educar/.env || artisan key:generate --force --ansi
 [[ -L i-educar/public/storage || -e i-educar/public/storage ]] || artisan storage:link --ansi
 artisan migrate --force --ansi
@@ -190,6 +208,8 @@ cat <<EOF
     i-Educar           http://localhost:$(porta nginx 80)        admin / 123456789
     Moodle             http://localhost:$(porta moodle 8080)     admin / admin123
 
-    A integração sincroniza sozinha a cada 5 minutos; para forçar:
+    A integração sincroniza sozinha a cada 5 minutos; para forçar, nesta ordem:
       curl -X POST "http://localhost:$(porta integration 8000)/sync/professores?completo=true"
+      curl -X POST "http://localhost:$(porta integration 8000)/sync/turmas?completo=true"
+      curl -X POST "http://localhost:$(porta integration 8000)/sync/alunos?completo=true"
 EOF

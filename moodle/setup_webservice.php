@@ -89,6 +89,35 @@ if (!$category) {
     info('Categoria iEducar criada');
 }
 
+// 3b. Sem mensagem de boas-vindas nas inscrições manuais. Desde o Moodle 4.4 ela vem
+//     ligada e é enviada a cada inscrito, com o professor do curso como remetente. O
+//     noemailever acima só evita o e-mail: a notificação continua sendo gerada no
+//     Moodle, uma por aluno em cada curso, milhares numa sincronização. O padrão vale
+//     para cursos novos; os cursos da integração que já existem são corrigidos aqui.
+if (get_config('enrol_manual', 'sendcoursewelcomemessage')) {
+    set_config('sendcoursewelcomemessage', 0, 'enrol_manual');
+    info('Mensagem de boas-vindas da inscrição manual desligada por padrão');
+}
+$corrigidas = $DB->count_records_sql(
+    "SELECT COUNT(1) FROM {enrol} e
+       JOIN {course} c ON c.id = e.courseid
+       JOIN {course_categories} cc ON cc.id = c.category
+      WHERE e.enrol = 'manual' AND e.customint1 <> 0
+        AND (cc.id = :categoria OR " . $DB->sql_like('cc.path', ':caminho') . ')',
+    ['categoria' => $category->id, 'caminho' => "/{$category->id}/%"]
+);
+if ($corrigidas) {
+    $DB->execute(
+        "UPDATE {enrol} SET customint1 = 0
+          WHERE enrol = 'manual' AND customint1 <> 0 AND courseid IN (
+                SELECT c.id FROM {course} c
+                  JOIN {course_categories} cc ON cc.id = c.category
+                 WHERE cc.id = :categoria OR " . $DB->sql_like('cc.path', ':caminho') . ')',
+        ['categoria' => $category->id, 'caminho' => "/{$category->id}/%"]
+    );
+    info("Mensagem de boas-vindas desligada em {$corrigidas} curso(s) da integração");
+}
+
 // 4. Papéis usados nas inscrições: o professor recebe o papel no curso de cada
 //    componente que leciona, nunca na categoria inteira.
 $roleids = [];
