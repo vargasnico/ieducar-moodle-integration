@@ -52,7 +52,7 @@ o token, e grava token e IDs em `/shared/moodle.json`, de onde a aplicação os 
 | Servidor ativo com vínculo ativo com turma no ano letivo | **Usuário** (`idnumber` `ieducar-servidor-<id>`) | ✅ caso 1 |
 | Turma × componente curricular | Um **curso** (`idnumber` `ieducar-turma-<turma>-componente-<componente>`) | ✅ caso 2 |
 | Vínculo professor ↔ turma e componentes | Inscrição como `editingteacher` nos cursos dos componentes | ✅ caso 2 |
-| Aluno enturmado (exceto componentes de que está dispensado) | Inscrição como aluno nos cursos da turma | planejado (caso 3) |
+| Aluno enturmado (exceto componentes de que está dispensado) | **Usuário** (`idnumber` `ieducar-aluno-<código>`) inscrito como `student` nos cursos da turma | ✅ caso 3 |
 
 Os cursos ficam em categorias por ano letivo (`iEducar › 2026`). O papel de professor é
 atribuído **no curso**, nunca na categoria inteira; por isso o caso 1 só cria e mantém o
@@ -151,6 +151,42 @@ flowchart TD
   curriculares diferenciados" no cadastro da turma) não são considerados; os cursos seguem
   os componentes da série na escola.
 
+### Caso 3 — alunos (implementado)
+
+Aluno no Moodle é o **aluno ativo com enturmação ativa** no ano letivo: matrícula ativa e
+enturmação sem exclusão e sem data de saída. Ele é inscrito como `student` em todos os
+cursos da sua turma, exceto nos componentes de que tem dispensa.
+
+```mermaid
+flowchart TD
+    A([Sincronização periódica ou POST /sync/alunos]) --> B["Escola ativa e ano letivo em andamento"]
+    B --> C["Alunos · matrículas · enturmações · dispensas<br/>todos-alunos · matriculas-escola<br/>movimentacao-enturmacao · dispensa-disciplina"]
+    C --> D{"Enturmação ativa?<br/>sem exclusão nem data de saída"}
+    D -- "sim" --> E["Componentes da série do aluno na escola<br/>menos os de dispensa ativa"]
+    D -- "não" --> F["Sem turma no ano"]
+    E --> G["Usuário aluno&lt;código&gt;<br/>cria ou atualiza · reativa"]
+    F --> H["Suspende o usuário, se existir"]
+    G --> I["Cursos visíveis da turma (caso 2)"]
+    I --> J["enrol_manual_enrol_users<br/>student"]
+    I --> K["enrol_manual_unenrol_users<br/>saiu da turma ou foi dispensado"]
+```
+
+- **Identidade e login:** `idnumber` `ieducar-aluno-<código>` e login `aluno<código>`, pelo
+  código do aluno no i-Educar, que nunca muda. A matrícula não serve: é renovada a cada
+  ano. O nome exibido é o **nome social**, quando houver.
+- **E-mail:** a API do i-Educar não expõe o e-mail do aluno; todos usam o provisório
+  `ieducar-aluno-<código>@sem-email.invalid`.
+- **Saídas:** transferência, remanejamento, abandono e falecimento mantêm a enturmação no
+  diário do i-Educar (sem `deleted_at`), mas preenchem a data de saída: o aluno é
+  desinscrito dos cursos da turma. No remanejamento ele entra nos cursos da turma nova. Sem
+  nenhuma turma no ano, o usuário é suspenso; voltando, é reativado.
+- **Dispensas:** qualquer dispensa ativa num componente, mesmo que só de algumas etapas,
+  tira o aluno do curso desse componente. Excluir a dispensa o inscreve de novo.
+- **Turmas multisseriadas:** o aluno só entra nos cursos dos componentes da sua série.
+- **Estado desejado:** como no caso 2, cada execução lê tudo do ano e só envia ao Moodle o
+  que mudou; usuários e inscrições vão em lotes. Cursos ocultos não têm as inscrições
+  alteradas. A sincronização periódica roda professores, turmas e alunos, nessa ordem.
+
 ## Pré-requisitos
 
 - [Docker](https://docs.docker.com/get-docker/) com Docker Compose v2.20+ (usa `include`)
@@ -227,10 +263,11 @@ servidores, um por situação da regra de professores:
 | Carla Mendes | Secretário escolar | — | não entra |
 | Diego Rocha | Professor | — | não entra |
 
-O `setup.sh` já roda `POST /sync/professores?completo=true` e `POST /sync/turmas?completo=true`
-ao final; depois disso a sincronização periódica cuida das alterações. Com o `DemoSeeder` são
-criados 177 cursos (21 turmas × os componentes de cada série), e Ana e Bruno são inscritos como
-professores nos cursos dos componentes que lecionam.
+O `setup.sh` já roda `POST /sync/professores`, `POST /sync/turmas` e `POST /sync/alunos`
+(com `completo=true`) ao final; depois disso a sincronização periódica cuida das alterações.
+Com o `DemoSeeder` são criados 177 cursos (21 turmas × os componentes de cada série), Ana e
+Bruno são inscritos como professores nos cursos dos componentes que lecionam, e os 210 alunos
+viram usuários com 1.770 inscrições (10 alunos por turma × os componentes da série).
 
 ## Acessos
 
@@ -248,9 +285,11 @@ professores nos cursos dos componentes que lecionam.
 | `GET`  | `/health/dependencias` | Autenticação no i-Educar e no Moodle; escolas ativas e ano letivo |
 | `POST` | `/sync/professores?completo=false` | Sincronização manual; `completo=true` ignora os cursores e reenvia todos ao Moodle |
 | `POST` | `/sync/turmas?completo=false` | Cursos de turma × componente e inscrição de professores; `completo=true` reenvia todos ao Moodle |
+| `POST` | `/sync/alunos?completo=false` | Alunos enturmados como usuários e inscrição nos cursos da turma (menos dispensas); `completo=true` reenvia todos ao Moodle |
 | `GET`  | `/sync/execucoes` | Histórico das execuções (manuais e agendadas) |
 | `GET`  | `/professores` | Mapeamento servidor do i-Educar ↔ usuário do Moodle |
 | `GET`  | `/cursos?ano=` | Mapeamento turma × componente do i-Educar ↔ curso do Moodle |
+| `GET`  | `/alunos` | Mapeamento aluno do i-Educar ↔ usuário do Moodle |
 
 ## Configuração
 
@@ -319,6 +358,8 @@ uv run ty check
 │       ├── contexto.py       # Escola e ano letivo da execução
 │       ├── professores.py    # Caso 1: servidores com turma → usuários
 │       ├── turmas.py         # Caso 2: turma × componente → cursos e inscrições
+│       ├── alunos.py         # Caso 3: alunos enturmados → usuários e inscrições
+│       ├── lotes.py          # Envio em lotes ao Moodle, com reenvio um a um
 │       └── service.py        # Trava, histórico de execuções e agendamento
 ├── moodle/setup_webservice.php   # Preparação do Moodle (serviço moodle-setup)
 ├── setup.sh                  # Sobe e prepara todo o ambiente

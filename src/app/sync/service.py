@@ -12,6 +12,7 @@ from app.clients.ieducar import IEducarClient
 from app.clients.moodle import MoodleClient
 from app.config import MoodleSetup, Settings, load_moodle_setup
 from app.db import Repository
+from app.sync.alunos import AlunoSync, AlunoSyncResult
 from app.sync.professores import ProfessorSync, SyncResult
 from app.sync.turmas import TurmaSync, TurmaSyncResult
 
@@ -112,12 +113,30 @@ class SyncService:
 
         return await self._executar("turmas", trigger, run)
 
+    async def sync_alunos(
+        self, trigger: str, completo: bool = False
+    ) -> AlunoSyncResult:
+        def run() -> Awaitable[AlunoSyncResult]:
+            setup = load_moodle_setup(self._settings)
+            return AlunoSync(
+                self.ieducar(),
+                self.moodle(setup),
+                self._repo,
+                setup,
+                self._settings.placeholder_email_domain,
+                escola_id=self._settings.ieducar_escola_id,
+                ano_letivo=self._settings.ieducar_ano_letivo,
+            ).run(completo=completo)
+
+        return await self._executar("alunos", trigger, run)
+
     async def run_periodically(self, interval: int) -> None:
-        # Professores antes de turmas: as inscrições usam os usuários e os vínculos
-        # que a sincronização de professores mantém.
+        # Em ordem de dependência: as inscrições de professores usam os usuários e os
+        # vínculos do caso 1, e as de alunos usam os cursos do caso 2.
         etapas: list[tuple[str, Callable[[], Awaitable[Any]]]] = [
             ("professores", lambda: self.sync_professores("agendado")),
             ("turmas", lambda: self.sync_turmas("agendado")),
+            ("alunos", lambda: self.sync_alunos("agendado")),
         ]
         while True:
             for nome, etapa in etapas:
