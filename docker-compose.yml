@@ -30,7 +30,6 @@ services:
       MOODLE_SETUP_FILE: /shared/moodle.json
       DATABASE_PATH: /data/integration.db
       SYNC_INTERVAL_SECONDS: ${SYNC_INTERVAL_SECONDS:-300}
-      SYNC_CURSOR_OVERLAP_HOURS: ${SYNC_CURSOR_OVERLAP_HOURS:-24}
       MOODLE_TOKEN: ${MOODLE_TOKEN:-}
     volumes:
       - integration_data:/data

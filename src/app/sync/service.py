@@ -1,24 +1,37 @@
 import asyncio
 import json
 import logging
-from collections.abc import Awaitable, Callable
 from dataclasses import asdict
-from datetime import timedelta
-from typing import Any, TypeVar
+from typing import Any, Literal
 
 import httpx
 
 from app.clients.ieducar import IEducarClient
 from app.clients.moodle import MoodleClient
-from app.config import MoodleSetup, Settings, load_moodle_setup
+from app.config import (
+    MoodleNotConfiguredError,
+    MoodleSetup,
+    Settings,
+    load_moodle_setup,
+)
 from app.db import Repository
-from app.sync.alunos import AlunoSync, AlunoSyncResult
-from app.sync.professores import ProfessorSync, SyncResult
-from app.sync.turmas import TurmaSync, TurmaSyncResult
+from app.interfaces import IEducarError, MoodleError
+from app.sync.alunos import AlunoSync
+from app.sync.base import Resultado, Sincronizacao
+from app.sync.professores import ProfessorSync
+from app.sync.turmas import TurmaSync
 
 log = logging.getLogger(__name__)
 
-R = TypeVar("R")
+Entidade = Literal["professores", "turmas", "alunos"]
+
+# Em ordem de dependência: as inscrições de professores usam os usuários do caso 1,
+# e as de alunos usam os cursos do caso 2.
+SINCRONIZACOES: dict[Entidade, type[Sincronizacao]] = {
+    "professores": ProfessorSync,
+    "turmas": TurmaSync,
+    "alunos": AlunoSync,
+}
 
 
 class SyncAlreadyRunningError(RuntimeError):
@@ -26,7 +39,8 @@ class SyncAlreadyRunningError(RuntimeError):
 
 
 class SyncService:
-    """Ponto único de entrada das sincronizações, usado pelo agendador e pelos endpoints."""
+    """Ponto único de entrada das sincronizações, usado pelo agendador e pelos
+    endpoints: uma por vez, cada uma registrada no histórico de execuções."""
 
     def __init__(
         self,
@@ -56,16 +70,25 @@ class SyncService:
         setup = setup or load_moodle_setup(self._settings)
         return MoodleClient(self._moodle_http, setup.token)
 
-    async def _executar(
-        self, entity: str, trigger: str, run: Callable[[], Awaitable[R]]
-    ) -> R:
-        """Executa uma sincronização sob a trava e registra o resultado em sync_run."""
+    async def sincronizar(
+        self, entidade: Entidade, trigger: str, completo: bool = False
+    ) -> Resultado:
         if self._lock.locked():
             raise SyncAlreadyRunningError("Já existe uma sincronização em andamento.")
         async with self._lock:
-            run_id = self._repo.start_run(entity, trigger)
+            run_id = self._repo.start_run(entidade, trigger)
             try:
-                result: Any = await run()
+                # Lido a cada execução: o arquivo pode surgir depois da API subir.
+                setup = load_moodle_setup(self._settings)
+                sync = SINCRONIZACOES[entidade](
+                    self.ieducar(),
+                    self.moodle(setup),
+                    self._repo,
+                    setup,
+                    self._settings,
+                    completo,
+                )
+                resultado = await sync.run()
             except asyncio.CancelledError:
                 self._repo.finish_run(run_id, "cancelled", "Execução interrompida.")
                 raise
@@ -73,81 +96,55 @@ class SyncService:
                 # Qualquer erro fecha a execução; senão ela fica "running" para sempre.
                 self._repo.finish_run(run_id, "failed", str(exc) or repr(exc))
                 raise
-            status = "partial" if result.erros else "success"
-            self._repo.finish_run(
-                run_id, status, json.dumps(asdict(result), ensure_ascii=False)
-            )
-            return result
-
-    async def sync_professores(
-        self, trigger: str, completo: bool = False
-    ) -> SyncResult:
-        def run() -> Awaitable[SyncResult]:
-            return ProfessorSync(
-                self.ieducar(),
-                self.moodle(),
-                self._repo,
-                self._settings.placeholder_email_domain,
-                escola_id=self._settings.ieducar_escola_id,
-                ano_letivo=self._settings.ieducar_ano_letivo,
-                cursor_overlap=timedelta(
-                    hours=self._settings.sync_cursor_overlap_hours
-                ),
-            ).run(completo=completo)
-
-        return await self._executar("professores", trigger, run)
-
-    async def sync_turmas(
-        self, trigger: str, completo: bool = False
-    ) -> TurmaSyncResult:
-        def run() -> Awaitable[TurmaSyncResult]:
-            setup = load_moodle_setup(self._settings)
-            return TurmaSync(
-                self.ieducar(),
-                self.moodle(setup),
-                self._repo,
-                setup,
-                escola_id=self._settings.ieducar_escola_id,
-                ano_letivo=self._settings.ieducar_ano_letivo,
-            ).run(completo=completo)
-
-        return await self._executar("turmas", trigger, run)
-
-    async def sync_alunos(
-        self, trigger: str, completo: bool = False
-    ) -> AlunoSyncResult:
-        def run() -> Awaitable[AlunoSyncResult]:
-            setup = load_moodle_setup(self._settings)
-            return AlunoSync(
-                self.ieducar(),
-                self.moodle(setup),
-                self._repo,
-                setup,
-                self._settings.placeholder_email_domain,
-                escola_id=self._settings.ieducar_escola_id,
-                ano_letivo=self._settings.ieducar_ano_letivo,
-            ).run(completo=completo)
-
-        return await self._executar("alunos", trigger, run)
+            status = "partial" if resultado.erros else "success"
+            resumo = json.dumps(asdict(resultado), ensure_ascii=False)
+            self._repo.finish_run(run_id, status, resumo)
+            return resultado
 
     async def run_periodically(self, interval: int) -> None:
-        # Em ordem de dependência: as inscrições de professores usam os usuários e os
-        # vínculos do caso 1, e as de alunos usam os cursos do caso 2.
-        etapas: list[tuple[str, Callable[[], Awaitable[Any]]]] = [
-            ("professores", lambda: self.sync_professores("agendado")),
-            ("turmas", lambda: self.sync_turmas("agendado")),
-            ("alunos", lambda: self.sync_alunos("agendado")),
-        ]
         while True:
-            for nome, etapa in etapas:
+            for entidade in SINCRONIZACOES:
                 try:
-                    result = await etapa()
-                    log.info("Sincronização agendada de %s concluída: %s", nome, result)
+                    resultado = await self.sincronizar(entidade, "agendado")
+                    log.info("Sincronização de %s concluída: %s", entidade, resultado)
                 except SyncAlreadyRunningError:
-                    log.info(
-                        "Sincronização agendada de %s pulada: outra execução em andamento",
-                        nome,
-                    )
+                    log.info("Sincronização de %s pulada: outra em andamento", entidade)
                 except Exception:
-                    log.exception("Sincronização agendada de %s falhou", nome)
+                    log.exception("Sincronização agendada de %s falhou", entidade)
             await asyncio.sleep(interval)
+
+    async def verificar_dependencias(self) -> dict[str, Any]:
+        """Confere se a integração consegue autenticar no i-Educar e no Moodle."""
+        checks: dict[str, Any] = {}
+        try:
+            ieducar = self.ieducar()
+            anos: dict[str, Any] = {}
+            for escola in await ieducar.listar_escolas():
+                if not escola.ativo:
+                    continue
+                # Uma escola sem ano letivo não indica que a API esteja fora do ar.
+                try:
+                    anos[escola.nome] = await ieducar.ano_letivo_em_andamento(
+                        escola.escola_id
+                    )
+                except (IEducarError, httpx.HTTPStatusError) as exc:
+                    anos[escola.nome] = f"erro: {exc}"
+            checks["ieducar"] = {
+                "ok": True,
+                "detalhe": "API acessível",
+                "escolas_ativas": anos,
+            }
+        except (IEducarError, httpx.HTTPError, ValueError) as exc:
+            checks["ieducar"] = {"ok": False, "detalhe": str(exc)}
+        try:
+            info = await self.moodle().get_site_info()
+            detalhe = f"{info['sitename']} (Moodle {info['release']})"
+            checks["moodle"] = {"ok": True, "detalhe": detalhe}
+        except (
+            MoodleNotConfiguredError,
+            MoodleError,
+            httpx.HTTPError,
+            ValueError,
+        ) as exc:
+            checks["moodle"] = {"ok": False, "detalhe": str(exc)}
+        return checks

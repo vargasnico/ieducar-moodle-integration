@@ -13,17 +13,14 @@ require_once($CFG->libdir . '/accesslib.php');
 const SERVICE_NAME = 'iEducar Integration';
 const SERVICE_SHORTNAME = 'ieducar_integration';
 const CATEGORY_IDNUMBER = 'ieducar';
-const ROLES = ['editingteacher', 'teacher', 'student'];
+const ROLES = ['editingteacher', 'student'];
 
-// Funções expostas ao microsserviço. As de curso/matrícula já ficam liberadas
-// para os próximos casos (turmas, componentes curriculares e alunos).
+// Funções que a aplicação de integração chama.
 const SERVICE_FUNCTIONS = [
     'core_webservice_get_site_info',
     'core_user_create_users',
     'core_user_update_users',
     'core_user_get_users_by_field',
-    'core_role_assign_roles',
-    'core_role_unassign_roles',
     'core_course_get_categories',
     'core_course_create_categories',
     'core_course_get_courses_by_field',
@@ -51,6 +48,11 @@ info('Web services REST habilitados');
 // ("Message was not sent"). Com noemailever o envio é ignorado com sucesso.
 set_config('noemailever', 1);
 info('Envio de e-mails desativado (noemailever)');
+
+// O e-mail vem do i-Educar e pode se repetir (irmãos com o e-mail do responsável,
+// servidor que também é aluno). Sem isso o Moodle recusa o usuário inteiro.
+set_config('allowaccountssameemail', 1);
+info('E-mail repetido entre usuários permitido (allowaccountssameemail)');
 
 // 2. Serviço externo com as funções da integração.
 $service = $DB->get_record('external_services', ['shortname' => SERVICE_SHORTNAME]);
@@ -116,18 +118,11 @@ if ($corrigidas) {
     info("Mensagem de boas-vindas desligada em {$corrigidas} curso(s) da integração");
 }
 
-// 4. Papéis usados nas inscrições em cursos (casos de turmas e alunos).
-//    O professor recebe o papel no curso de cada componente que leciona, nunca
-//    na categoria inteira. Versões anteriores deste script liberavam o papel de
-//    professor no contexto de categoria; isso é revertido para o padrão do Moodle.
+// 4. Papéis usados nas inscrições: o professor recebe o papel no curso de cada
+//    componente que leciona, nunca na categoria inteira.
 $roleids = [];
 foreach (ROLES as $shortname) {
     $roleids[$shortname] = (int) $DB->get_field('role', 'id', ['shortname' => $shortname], MUST_EXIST);
-}
-$levels = array_values(get_role_contextlevels($roleids['editingteacher']));
-if (in_array(CONTEXT_COURSECAT, $levels)) {
-    set_role_contextlevels($roleids['editingteacher'], array_diff($levels, [CONTEXT_COURSECAT]));
-    info('Papel editingteacher restrito novamente a cursos (padrão do Moodle)');
 }
 
 // 5. Token permanente do administrador para o serviço.
