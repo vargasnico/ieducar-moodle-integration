@@ -45,6 +45,25 @@ O `moodle-setup` prepara o Moodle a cada `up` (idempotente): habilita os Web Ser
 cria o serviço externo "iEducar Integration" com as funções usadas, a categoria `iEducar` e
 o token, e grava token e IDs em `/shared/moodle.json`, de onde a aplicação os lê.
 
+### Organização da aplicação
+
+A integração é um monólito: um único processo FastAPI reúne a comunicação com os dois
+sistemas, as regras de sincronização e o banco local (SQLite). Dentro dele as
+responsabilidades ficam em camadas, e cada uma só depende das de baixo:
+
+| Camada | Módulos | Responsabilidade |
+|---|---|---|
+| API e agendamento | `main.py`, `sync/service.py` | Rotas, tratamento de erros HTTP, trava (uma sincronização por vez), histórico e execução periódica |
+| Casos de integração | `sync/professores.py`, `sync/turmas.py`, `sync/alunos.py` | Regra de cada caso: quem deve existir no Moodle e com quais inscrições |
+| Regras compartilhadas | `sync/base.py`, `sync/usuarios.py`, `sync/inscricoes.py`, `sync/idempotencia.py` | Escola e ano letivo, ciclo de vida dos usuários, diferença de inscrições, prevenção de duplicados e lotes |
+| Interfaces e domínio | `interfaces.py`, `domain.py` | Protocolos `IEducar` e `Moodle` e os dados do i-Educar |
+| Infraestrutura | `clients/ieducar.py`, `clients/moodle.py`, `db.py` | Clientes HTTP que implementam as interfaces e o repositório SQLite |
+
+Os casos dependem das interfaces, não dos clientes HTTP; por isso os testes trocam os
+clientes por versões em memória. Um caso novo é uma subclasse de `Sincronizacao` e uma
+entrada em `SINCRONIZACOES` (`sync/service.py`): a rota `POST /sync/{entidade}`, o
+agendamento e o histórico passam a valer para ele sem outra alteração.
+
 ## Regras da integração
 
 | i-Educar | Moodle | Situação |
@@ -93,8 +112,10 @@ flowchart TD
   Moodle sem turma no ano letivo também é suspenso, o que cobre a troca de ano letivo e
   vínculos transferidos para outro servidor.
 - **Contas existentes:** se já houver no Moodle um usuário sem `idnumber` com o login do
-  servidor, ele passa a ser mantido pela integração. Se o e-mail do servidor já pertencer
-  a outro usuário do Moodle, usa-se o e-mail provisório.
+  servidor, ele passa a ser mantido pela integração. Se o login já pertencer a um usuário
+  com outro `idnumber`, o servidor fica com erro e o usuário não é alterado. O e-mail pode
+  se repetir entre usuários (`allowaccountssameemail`, ligado pelo `moodle-setup`); sem
+  e-mail no i-Educar, usa-se `ieducar-servidor-<id>@sem-email.invalid`.
 - **Falhas:** um servidor que falha não interrompe os demais e, como o mapeamento não é
   atualizado, é reenviado na próxima execução. `completo=true` reenvia todos os servidores ao Moodle, desfazendo alterações
   feitas direto nele (e recriando usuários excluídos lá).
@@ -284,9 +305,7 @@ viram usuários com 1.770 inscrições (10 alunos por turma × os componentes da
 |---|---|---|
 | `GET`  | `/health` | Aplicação no ar |
 | `GET`  | `/health/dependencias` | Autenticação no i-Educar e no Moodle; escolas ativas e ano letivo |
-| `POST` | `/sync/professores?completo=false` | Sincronização manual; `completo=true` reenvia todos ao Moodle, mesmo sem mudança |
-| `POST` | `/sync/turmas?completo=false` | Cursos de turma × componente e inscrição de professores; `completo=true` reenvia todos ao Moodle |
-| `POST` | `/sync/alunos?completo=false` | Alunos enturmados como usuários e inscrição nos cursos da turma (menos dispensas); `completo=true` reenvia todos ao Moodle |
+| `POST` | `/sync/{entidade}?completo=false` | Sincronização manual de `professores`, `turmas` ou `alunos`, nessa ordem; `completo=true` reenvia todos ao Moodle, mesmo sem mudança |
 | `GET`  | `/sync/execucoes` | Histórico das execuções (manuais e agendadas) |
 | `GET`  | `/professores` | Mapeamento servidor do i-Educar ↔ usuário do Moodle |
 | `GET`  | `/cursos?ano=` | Mapeamento turma × componente do i-Educar ↔ curso do Moodle |
@@ -356,18 +375,23 @@ momentâneas do Moodle e lotes com um item inválido.
 ```
 .
 ├── src/app/
-│   ├── main.py               # FastAPI: rotas e agendador
+│   ├── main.py               # FastAPI: rotas e erros HTTP
 │   ├── config.py             # Variáveis de ambiente e dados do moodle-setup
-│   ├── db.py                 # SQLite: mapeamentos e execuções
-│   ├── clients/ieducar.py    # Cliente da API legada do i-Educar
-│   ├── clients/moodle.py     # Cliente dos Web Services REST do Moodle
+│   ├── domain.py             # Dados do i-Educar (servidor, turma, aluno...)
+│   ├── interfaces.py         # Protocolos IEducar e Moodle
+│   ├── db.py                 # SQLite: mapeamentos, inscrições e execuções
+│   ├── clients/ieducar.py    # IEducar sobre a API legada do i-Educar
+│   ├── clients/moodle.py     # Moodle sobre os Web Services REST
 │   └── sync/
-│       ├── contexto.py       # Escola e ano letivo da execução
+│       ├── service.py        # Registro dos casos, trava, histórico e agendamento
+│       ├── base.py           # Sincronizacao: escola, ano letivo e resultado
 │       ├── professores.py    # Caso 1: servidores com turma → usuários
 │       ├── turmas.py         # Caso 2: turma × componente → cursos e inscrições
 │       ├── alunos.py         # Caso 3: alunos enturmados → usuários e inscrições
-│       ├── lotes.py          # Envio em lotes ao Moodle, com reenvio um a um
-│       └── service.py        # Trava, histórico de execuções e agendamento
+│       ├── usuarios.py       # Criar, adotar, atualizar e suspender usuários
+│       ├── inscricoes.py     # Inscrever e desinscrever pela diferença
+│       └── idempotencia.py   # Localizar antes de criar; lotes com reenvio um a um
+├── tests/                    # Cenários contra i-Educar e Moodle em memória
 ├── moodle/setup_webservice.php   # Preparação do Moodle (serviço moodle-setup)
 ├── setup.sh                  # Sobe e prepara todo o ambiente
 ├── scripts/                  # Dados de teste
