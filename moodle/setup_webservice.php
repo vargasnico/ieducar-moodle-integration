@@ -46,6 +46,12 @@ if (!in_array('rest', $protocols)) {
 }
 info('Web services REST habilitados');
 
+// O ambiente não tem servidor de e-mail: sem isso o Moodle falha ao mandar a
+// mensagem de boas-vindas do curso e a inscrição pela API é recusada
+// ("Message was not sent"). Com noemailever o envio é ignorado com sucesso.
+set_config('noemailever', 1);
+info('Envio de e-mails desativado (noemailever)');
+
 // 2. Serviço externo com as funções da integração.
 $service = $DB->get_record('external_services', ['shortname' => SERVICE_SHORTNAME]);
 if (!$service) {
