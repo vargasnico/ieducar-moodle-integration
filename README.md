@@ -337,12 +337,19 @@ uv sync
 uv run fastapi dev src/app/main.py
 ```
 
-Lint e checagem de tipos:
+Testes, lint e checagem de tipos:
 
 ```bash
+uv run pytest
 uv run ruff check .
 uv run ty check
 ```
+
+Os testes (`tests/`) rodam as sincronizações contra um i-Educar e um Moodle em memória
+(`tests/fakes.py`), que implementam as mesmas interfaces dos clientes HTTP, sem Docker.
+Cobrem a criação de usuários, cursos e inscrições, a ausência de duplicados ao repetir a
+execução ou perder o banco local, suspensões e ocultações, conflitos de login, falhas
+momentâneas do Moodle e lotes com um item inválido.
 
 ## Estrutura
 
