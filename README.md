@@ -205,7 +205,7 @@ O [`setup.sh`](setup.sh) sobe os containers, instala o i-Educar, carrega os dado
 configura o Moodle e roda a primeira sincronização; ao final mostra os endereços e as senhas.
 A primeira execução leva uns 5–15 minutos, conforme a máquina e a rede (dependências do
 i-Educar e instalação do Moodle). Ele pode ser executado de novo a qualquer momento: cada passo confere o que já foi
-feito, e uma nova execução leva segundos.
+feito, e uma nova execução leva cerca de 1 minuto.
 
 - **Windows:** rode no **Git Bash** (vem com o Git), com o Docker Desktop aberto.
 - **Sem dados de teste:** `./setup.sh --sem-dados`.
