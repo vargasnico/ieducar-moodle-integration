@@ -158,58 +158,62 @@ flowchart TD
 
 ## Como executar
 
-**1. Clone com os submodules**
-
 ```bash
 git clone --recurse-submodules https://github.com/vargasnico/ieducar-moodle-integration.git
 cd ieducar-moodle-integration
+./setup.sh
 ```
 
-Se já clonou sem os submodules: `git submodule update --init`.
+O [`setup.sh`](setup.sh) sobe os containers, instala o i-Educar, carrega os dados de teste,
+configura o Moodle e roda a primeira sincronização; ao final mostra os endereços e as senhas.
+A primeira execução leva uns 5–15 minutos, conforme a máquina e a rede (dependências do
+i-Educar e instalação do Moodle). Ele pode ser executado de novo a qualquer momento: cada passo confere o que já foi
+feito, e uma nova execução leva segundos.
 
-**2. Crie o `.env` do i-Educar**
+- **Windows:** rode no **Git Bash** (vem com o Git), com o Docker Desktop aberto.
+- **Sem dados de teste:** `./setup.sh --sem-dados`.
+
+### Passo a passo manual
+
+O que o `setup.sh` faz, para quem quiser rodar cada comando:
 
 ```bash
+git submodule update --init                  # se clonou sem --recurse-submodules
 cp i-educar/.env.example i-educar/.env
-```
+# Só no Linux: HOST_UID/HOST_GID em i-educar/.env iguais a `id -u` / `id -g`.
+docker compose up -d php postgres redis moodle
 
-**3. Suba os containers**
-
-```bash
-docker compose up -d --build
-```
-
-A primeira inicialização do Moodle leva alguns minutos; acompanhe com
-`docker compose logs -f moodle`. A aplicação só sobe depois que o `moodle-setup` termina.
-
-**4. Instale o i-Educar (apenas na primeira vez)**
-
-```bash
-docker compose exec -u root php sh -c "find bootstrap/cache storage -type d -exec chmod 777 {} +"
+docker compose exec -u root php sh -c "chown \$(stat -c %u:%g .) packages packages/portabilis; find bootstrap/cache storage -type d -exec chmod 777 {} +"
 docker compose exec php composer config --global preferred-install.cossou/jasperphp source
 docker compose exec php composer new-install
 docker compose exec php php artisan db:seed
 docker compose exec php php artisan community:reports:install
 docker compose exec php php artisan vendor:publish --tag=reports-assets --ansi
+
+# Dados de teste
+docker compose exec php php artisan db:seed --class=DemoSeeder
+docker compose exec -T php sh -c "cat > /tmp/seed.php" < scripts/ieducar_seed_professores.php
+docker compose exec php php artisan tinker --execute="require '/tmp/seed.php';"
+
+docker compose up -d --build
 ```
 
-> - O `chmod` evita erros de permissão em volumes montados no Windows.
+> - O `HOST_UID`/`HOST_GID` fazem o usuário do container PHP ser o dono dos arquivos do
+>   submodule montado; sem isso, no Linux, o `composer` não consegue criar `vendor/`.
+> - O `chown` corrige `packages/`, que o Docker cria como root ao montar o Módulo de
+>   Relatórios; o `chmod` evita erros de permissão em volumes montados no Windows.
 > - O `composer config` faz a dependência do Módulo de Relatórios (`cossou/jasperphp`, que traz
 >   o JasperStarter) ser instalada via `git clone`. Instalada pelo `.zip`, a extração falha no
 >   Windows com `Could not delete .../JasperStarter/lib`.
 > - O `new-install` já ativa o Módulo de Relatórios (via `composer plug-and-play`), pois o
 >   submodule `i-educar-reports` é montado em `i-educar/packages/portabilis/` pelo
->   `ieducar.override.yml`. Os dois últimos comandos instalam os menus e os arquivos dele.
+>   `ieducar.override.yml`. Os dois comandos seguintes instalam os menus e os arquivos dele.
 >   Sem o módulo, o cadastro de turmas do i-Educar quebra
 >   (`Class "Portabilis_Model_Report_TipoBoletim" not found`).
+> - A primeira inicialização do Moodle leva alguns minutos (`docker compose logs -f moodle`);
+>   a integração só sobe depois que o `moodle-setup` termina.
 
-**5. (Opcional) Dados de teste**
-
-```bash
-docker compose exec php php artisan db:seed --class=DemoSeeder
-docker compose exec -T php sh -c "cat > /tmp/seed.php" < scripts/ieducar_seed_professores.php
-docker compose exec php php artisan tinker --execute="require '/tmp/seed.php';"
-```
+### Dados de teste
 
 O `DemoSeeder` do i-Educar cria escolas, cursos, séries, turmas e alunos. O script
 [`scripts/ieducar_seed_professores.php`](scripts/ieducar_seed_professores.php) cria quatro
@@ -222,10 +226,10 @@ servidores, um por situação da regra de professores:
 | Carla Mendes | Secretário escolar | — | não entra |
 | Diego Rocha | Professor | — | não entra |
 
-Depois rode `POST /sync/professores?completo=true` e `POST /sync/turmas` (ou aguarde a
-sincronização periódica). Com o `DemoSeeder` são criados 177 cursos (21 turmas × os
-componentes de cada série), e Ana e Bruno são inscritos como professores nos cursos dos
-componentes que lecionam.
+O `setup.sh` já roda `POST /sync/professores?completo=true` e `POST /sync/turmas?completo=true`
+ao final; depois disso a sincronização periódica cuida das alterações. Com o `DemoSeeder` são
+criados 177 cursos (21 turmas × os componentes de cada série), e Ana e Bruno são inscritos como
+professores nos cursos dos componentes que lecionam.
 
 ## Acessos
 
@@ -316,6 +320,7 @@ uv run ty check
 │       ├── turmas.py         # Caso 2: turma × componente → cursos e inscrições
 │       └── service.py        # Trava, histórico de execuções e agendamento
 ├── moodle/setup_webservice.php   # Preparação do Moodle (serviço moodle-setup)
+├── setup.sh                  # Sobe e prepara todo o ambiente
 ├── scripts/                  # Dados de teste
 ├── i-educar/                 # Submodule do i-Educar (tag 2.11.0)
 ├── i-educar-reports/         # Submodule do Módulo de Relatórios do i-Educar (branch 2.11)
@@ -325,6 +330,13 @@ uv run ty check
 ```
 
 ## Solução de problemas
+
+- **`The container name "/ieducar-redis" is already in use`** — sobrou um i-Educar (ou
+  Moodle) de outro `docker compose`, com os mesmos nomes de container. Remova os antigos
+  (`docker rm -f <nome>`; os volumes de dados não são apagados) e rode o `setup.sh` de novo.
+- **`vendor does not exist and could not be created` / `plug-and-play.json: Permission
+  denied`** (Linux) — permissões do submodule montado; o `setup.sh` corrige
+  (`HOST_UID`/`HOST_GID` e dono de `packages/`). Veja as notas do passo a passo manual.
 
 - **Horizon em restart loop (`env: can't execute 'php'`)** — causado por quebras de linha
   CRLF no checkout do Windows. Já tratado pelo `ieducar.override.yml`; para evitar o

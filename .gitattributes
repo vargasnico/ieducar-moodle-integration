@@ -1,0 +1,3 @@
+# Scripts shell precisam de LF mesmo em checkouts do Windows (core.autocrlf=true);
+# com CRLF o bash falha com "$'\r': command not found".
+*.sh text eol=lf
