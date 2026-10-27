@@ -1,14 +1,17 @@
 <?php
-// Dados de teste para a sincronização de professores (caso 1).
+// Completa os dados de teste do DemoSeeder para a integração.
 //
 // Pré-requisito: php artisan db:seed --class=DemoSeeder (escolas, turmas, alunos).
 // Uso (na raiz do repositório):
-//   docker compose exec -T php sh -c "cat > /tmp/seed.php" < scripts/ieducar_seed_professores.php
+//   docker compose exec -T php sh -c "cat > /tmp/seed.php" < scripts/ieducar_seed.php
 //   docker compose exec php php artisan tinker --execute="require '/tmp/seed.php';"
 //
-// Cria quatro servidores, um para cada situação da regra "professor = servidor
-// ativo com vínculo ativo com turma no ano letivo". Pode ser executado de novo:
-// servidores que já existem (pelo nome) são mantidos.
+// 1. Dá nome completo e único a cada aluno: o DemoSeeder grava só um primeiro nome,
+//    que se repete entre alunos e parece duplicado no Moodle.
+// 2. Cria quatro servidores, um para cada situação da regra "professor = servidor
+//    ativo com vínculo ativo com turma no ano letivo".
+// Pode ser executado de novo: alunos que já têm sobrenome e servidores que já
+// existem (pelo nome) são mantidos.
 
 use App\Models\LegacyRole;
 use App\Models\LegacySchoolClass;
@@ -20,6 +23,33 @@ use Database\Factories\LegacyPersonFactory;
 use Database\Factories\LegacyRoleFactory;
 use Database\Factories\LegacySchoolClassTeacherDisciplineFactory;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
+
+// 1. Nomes completos e únicos para os alunos (semente fixa: mesmo resultado sempre).
+$faker = Faker\Factory::create('pt_BR');
+$faker->seed(2026);
+$usados = array_flip(DB::table('cadastro.pessoa')->whereNotNull('nome')->pluck('nome')->all());
+$alunos = DB::table('pmieducar.aluno as a')
+    ->join('cadastro.pessoa as p', 'p.idpes', '=', 'a.ref_idpes')
+    ->where('p.nome', 'not like', '% %')
+    ->orderBy('a.cod_aluno')
+    ->get(['p.idpes', 'p.nome']);
+foreach ($alunos as $aluno) {
+    do {
+        $nome = "{$aluno->nome} {$faker->lastName()} {$faker->lastName()}";
+    } while (isset($usados[$nome]));
+    $usados[$nome] = true;
+    DB::table('cadastro.pessoa')->where('idpes', $aluno->idpes)->update([
+        'nome' => $nome,
+        'slug' => Str::lower(Str::slug($nome, ' ')),
+        'data_rev' => now(),
+    ]);
+}
+echo $alunos->isEmpty()
+    ? "= alunos já têm nome completo\n"
+    : "+ nome completo para {$alunos->count()} aluno(s)\n";
+
+// 2. Servidores.
 
 $funcao = fn (string $nome, string $sigla, int $professor) => LegacyRole::query()->where('nm_funcao', $nome)->first()
     ?? LegacyRoleFactory::new()->create(['nm_funcao' => $nome, 'abreviatura' => $sigla, 'professor' => $professor]);

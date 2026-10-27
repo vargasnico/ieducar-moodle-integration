@@ -251,7 +251,7 @@ docker compose exec php php artisan vendor:publish --tag=reports-assets --ansi
 
 # Dados de teste
 docker compose exec php php artisan db:seed --class=DemoSeeder
-docker compose exec -T php sh -c "cat > /tmp/seed.php" < scripts/ieducar_seed_professores.php
+docker compose exec -T php sh -c "cat > /tmp/seed.php" < scripts/ieducar_seed.php
 docker compose exec php php artisan tinker --execute="require '/tmp/seed.php';"
 
 docker compose up -d --build
@@ -274,9 +274,10 @@ docker compose up -d --build
 
 ### Dados de teste
 
-O `DemoSeeder` do i-Educar cria escolas, cursos, séries, turmas e alunos. O script
-[`scripts/ieducar_seed_professores.php`](scripts/ieducar_seed_professores.php) cria quatro
-servidores, um por situação da regra de professores:
+O `DemoSeeder` do i-Educar cria escolas, cursos, séries, turmas e alunos, mas grava só um
+primeiro nome por aluno, que se repete (vários "Franco", por exemplo). O script
+[`scripts/ieducar_seed.php`](scripts/ieducar_seed.php) dá a cada aluno um nome completo e
+único e cria quatro servidores, um por situação da regra de professores:
 
 | Servidor | Função | Turma | Resultado esperado no Moodle |
 |---|---|---|---|
