@@ -274,10 +274,13 @@ docker compose up -d --build
 
 ### Dados de teste
 
-O `DemoSeeder` do i-Educar cria escolas, cursos, séries, turmas e alunos, mas grava só um
-primeiro nome por aluno, que se repete (vários "Franco", por exemplo). O script
-[`scripts/ieducar_seed.php`](scripts/ieducar_seed.php) dá a cada aluno um nome completo e
-único e cria quatro servidores, um por situação da regra de professores:
+O `DemoSeeder` do i-Educar cria escolas, cursos, séries, turmas e alunos com pai e mãe, mas
+grava só um primeiro nome por pessoa (que se repete: vários "Franco", por exemplo), pai e mãe
+de sexo aleatório, e-mails aleatórios em domínios reais e parte das pessoas físicas como
+jurídicas. O script [`scripts/ieducar_seed.php`](scripts/ieducar_seed.php) corrige isso (cada
+aluno fica com o sobrenome da mãe e o do pai, todo nome é único e cada e-mail é derivado do
+nome no domínio reservado `.example`) e cria quatro servidores, um por situação da regra de
+professores:
 
 | Servidor | Função | Turma | Resultado esperado no Moodle |
 |---|---|---|---|
