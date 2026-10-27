@@ -130,6 +130,22 @@ async def sync_turmas(request: Request, completo: bool = False) -> dict[str, Any
     return asdict(result)
 
 
+@app.post("/sync/alunos", tags=["sincronização"])
+async def sync_alunos(request: Request, completo: bool = False) -> dict[str, Any]:
+    """Cria os alunos enturmados no ano e os inscreve nos cursos da turma, exceto nos
+    componentes de que têm dispensa. Com `completo=true` reenvia ao Moodle todos os
+    usuários e inscrições. Rode antes a de turmas."""
+    try:
+        result = await _sync(request).sync_alunos("manual", completo=completo)
+    except SyncAlreadyRunningError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except MoodleNotConfiguredError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except (IEducarError, MoodleError, httpx.HTTPError) as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return asdict(result)
+
+
 @app.get("/sync/execucoes", tags=["sincronização"])
 def listar_execucoes(request: Request, limit: int = 20) -> dict[str, Any]:
     return {
@@ -148,3 +164,9 @@ def listar_professores(request: Request) -> list[dict[str, Any]]:
 def listar_cursos(request: Request, ano: int | None = None) -> list[dict[str, Any]]:
     """Mapeamento turma × componente curricular do i-Educar ↔ curso do Moodle."""
     return [asdict(c) for c in _repo(request).list_cursos(ano)]
+
+
+@app.get("/alunos", tags=["mapeamentos"])
+def listar_alunos(request: Request) -> list[dict[str, Any]]:
+    """Mapeamento aluno do i-Educar ↔ usuário do Moodle."""
+    return [asdict(a) for a in _repo(request).list_alunos()]

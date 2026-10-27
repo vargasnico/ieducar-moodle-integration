@@ -56,6 +56,46 @@ class ComponenteCurricular:
     abreviatura: str
 
 
+@dataclass(frozen=True)
+class Aluno:
+    aluno_id: int
+    nome: str
+    nome_social: str | None
+    ativo: bool
+    updated_at: str
+
+
+@dataclass(frozen=True)
+class Matricula:
+    """Vínculo do aluno com uma série num ano (muda a cada rematrícula)."""
+
+    matricula_id: int
+    aluno_id: int
+    escola_id: int
+    ativo: bool
+
+
+@dataclass(frozen=True)
+class Enturmacao:
+    """Matrícula alocada numa turma (pmieducar.matricula_turma)."""
+
+    enturmacao_id: int
+    matricula_id: int
+    turma_id: int
+    serie_id: int
+    # Sem exclusão e sem data de saída. Transferência, remanejamento, abandono e
+    # falecimento mantêm deleted_at vazio (o aluno segue no diário) e só preenchem
+    # a data de saída.
+    ativa: bool
+
+
+@dataclass(frozen=True)
+class Dispensa:
+    matricula_id: int
+    componente_id: int
+    ativa: bool
+
+
 def _ativo(value: Any) -> bool:
     return str(value).strip().lower() in {"1", "true", "t"}
 
@@ -209,4 +249,77 @@ class IEducarClient:
                 abreviatura=str(c.get("abreviatura") or "").strip(),
             )
             for c in data.get("componentes_curriculares") or []
+        ]
+
+    async def listar_alunos(self, ano: int, escolas: list[int]) -> list[Aluno]:
+        """Alunos com matrícula no ano nas escolas, incluindo os excluídos."""
+        data = await self._get(
+            "Aluno",
+            "todos-alunos",
+            instituicao_id=self._instituicao_id,
+            escola=",".join(str(e) for e in escolas),
+            ano=ano,
+        )
+        return [
+            Aluno(
+                aluno_id=int(a["aluno_id"]),
+                nome=str(a.get("nome_aluno") or "").strip(),
+                nome_social=(str(a.get("nome_social") or "").strip() or None),
+                ativo=not a.get("deleted_at"),
+                updated_at=str(a["updated_at"]),
+            )
+            for a in data.get("alunos") or []
+        ]
+
+    async def listar_matriculas(self, ano: int, escolas: list[int]) -> list[Matricula]:
+        data = await self._get(
+            "Matricula",
+            "matriculas-escola",
+            ano=ano,
+            escola=",".join(str(e) for e in escolas),
+        )
+        return [
+            Matricula(
+                matricula_id=int(m["matricula_id"]),
+                aluno_id=int(m["aluno_id"]),
+                escola_id=int(m["escola_id"]),
+                ativo=_ativo(m.get("ativo")) and not m.get("deleted_at"),
+            )
+            for m in data.get("matriculas") or []
+        ]
+
+    async def listar_enturmacoes(
+        self, ano: int, escolas: list[int]
+    ) -> list[Enturmacao]:
+        data = await self._get(
+            "Matricula",
+            "movimentacao-enturmacao",
+            ano=ano,
+            escola=",".join(str(e) for e in escolas),
+        )
+        return [
+            Enturmacao(
+                enturmacao_id=int(e["id"]),
+                matricula_id=int(e["matricula_id"]),
+                turma_id=int(e["turma_id"]),
+                serie_id=int(e["serie_id"]),
+                ativa=not e.get("deleted_at") and not e.get("data_saida"),
+            )
+            for e in data.get("enturmacoes") or []
+        ]
+
+    async def listar_dispensas(self, escolas: list[int]) -> list[Dispensa]:
+        """Dispensas de componente curricular por matrícula, de todos os anos."""
+        data = await self._get(
+            "Matricula",
+            "dispensa-disciplina",
+            escola=",".join(str(e) for e in escolas),
+        )
+        return [
+            Dispensa(
+                matricula_id=int(d["matricula_id"]),
+                componente_id=int(d["disciplina_id"]),
+                ativa=not d.get("deleted_at"),
+            )
+            for d in data.get("dispensas") or []
         ]

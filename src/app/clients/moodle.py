@@ -60,9 +60,24 @@ class MoodleClient:
         )
         return users[0] if users else None
 
+    async def get_users_by_field(
+        self, field: str, values: list[str]
+    ) -> list[dict[str, Any]]:
+        """Busca vários usuários numa chamada; quem não existe não aparece no resultado."""
+        if not values:
+            return []
+        return await self.call(
+            "core_user_get_users_by_field", field=field, values=values
+        )
+
     async def create_user(self, user: dict[str, Any]) -> int:
         created = await self.call("core_user_create_users", users=[user])
         return int(created[0]["id"])
+
+    async def create_users(self, users: list[dict[str, Any]]) -> dict[str, int]:
+        """Cria em uma transação (um usuário inválido desfaz o lote); devolve username → id."""
+        created = await self.call("core_user_create_users", users=users)
+        return {str(u["username"]): int(u["id"]) for u in created}
 
     async def update_user(self, user: dict[str, Any]) -> None:
         # Erros por usuário (id inválido, usuário excluído, e-mail duplicado...) não

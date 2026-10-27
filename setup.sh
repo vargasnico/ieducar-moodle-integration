@@ -170,10 +170,11 @@ etapa "Conferindo acesso da integração ao i-Educar e ao Moodle"
 api GET /health/dependencias || true
 
 if ((DADOS_DEMO)); then
-  # Professores antes de turmas: as inscrições nos cursos usam os usuários criados.
+  # Em ordem de dependência: professores, depois turmas (cursos e inscrições de
+  # professores) e alunos (inscritos nos cursos criados pelas turmas).
   # A sincronização agendada roda ao subir a integração; se ainda estiver em
   # andamento a API responde 409 e tentamos de novo.
-  for entidade in professores turmas; do
+  for entidade in professores turmas alunos; do
     etapa "Primeira sincronização de $entidade"
     for _ in $(seq 30); do
       if resultado=$(api POST "/sync/$entidade?completo=true" 2>&1); then break; fi

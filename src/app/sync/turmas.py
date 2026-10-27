@@ -30,6 +30,7 @@ from app.clients.moodle import MoodleClient, MoodleError
 from app.config import MoodleNotConfiguredError, MoodleSetup
 from app.db import CursoMapping, Repository
 from app.sync.contexto import resolver_contexto
+from app.sync.lotes import enviar_em_lotes
 
 log = logging.getLogger(__name__)
 
@@ -40,7 +41,6 @@ CURSO_REMOVIDO = {"invalidrecord", "invalidcourseid"}
 SERIE_SEM_COMPONENTES = "não está vinculado ao ano letivo"
 # Itens por chamada ao Moodle, longe do max_input_vars padrão do PHP (1000).
 LOTE_CURSOS = 50
-LOTE_INSCRICOES = 100
 
 Par = tuple[int, int]
 
@@ -458,20 +458,9 @@ class TurmaSync:
         descricao: str,
         result: TurmaSyncResult,
     ) -> list[Par]:
-        """Envia pares (curso, usuário) em lotes e devolve os aceitos. O Moodle processa
-        cada lote numa transação; se um par inválido derruba o lote, reenvia um a um."""
-        aceitos: list[Par] = []
-        for lote in batched(pares, LOTE_INSCRICOES):
-            try:
-                await enviar(list(lote))
-            except MoodleError, httpx.HTTPError:
-                for par in lote:
-                    try:
-                        await enviar([par])
-                    except (MoodleError, httpx.HTTPError) as exc:
-                        self._erro(result, descricao.format(*par), exc)
-                        continue
-                    aceitos.append(par)
-            else:
-                aceitos.extend(lote)
-        return aceitos
+        """Envia pares (curso, usuário) em lotes e devolve os aceitos."""
+        return await enviar_em_lotes(
+            pares,
+            enviar,
+            lambda par, exc: self._erro(result, descricao.format(*par), exc),
+        )
