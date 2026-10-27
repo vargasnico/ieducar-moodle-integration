@@ -149,13 +149,10 @@ class IEducarClient:
         ano = data.get("ano")
         return int(ano) if ano else None
 
-    async def listar_servidores(self, modified: str | None = None) -> list[Servidor]:
-        """Servidores da instituição, opcionalmente só os alterados desde `modified`."""
+    async def listar_servidores(self) -> list[Servidor]:
+        """Servidores da instituição (sem e-mail; ver `obter_servidor`)."""
         data = await self._get(
-            "Servidor",
-            "servidores",
-            instituicao_id=self._instituicao_id,
-            modified=modified,
+            "Servidor", "servidores", instituicao_id=self._instituicao_id
         )
         return [
             Servidor(
@@ -183,9 +180,7 @@ class IEducarClient:
             email=email or None,
         )
 
-    async def listar_vinculos(
-        self, ano: int, escolas: list[int], modified: str | None = None
-    ) -> list[Vinculo]:
+    async def listar_vinculos(self, ano: int, escolas: list[int]) -> list[Vinculo]:
         """Vínculos professor ↔ turma do ano, incluindo os removidos (deleted_at)."""
         data = await self._get(
             "Servidor",
@@ -193,7 +188,6 @@ class IEducarClient:
             instituicao_id=self._instituicao_id,
             ano=ano,
             escola=",".join(str(e) for e in escolas),
-            modified=modified,
         )
         return [
             Vinculo(

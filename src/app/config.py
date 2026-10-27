@@ -28,11 +28,6 @@ class Settings(BaseSettings):
     database_path: Path = Path("data/integration.db")
     # Intervalo da sincronização periódica; 0 desativa o agendamento.
     sync_interval_seconds: int = 300
-    # O i-Educar grava updated_at ora em UTC (código legado, CURRENT_TIMESTAMP do
-    # Postgres), ora no fuso da aplicação (models Laravel). As leituras
-    # incrementais recuam o cursor por esta margem para não perder registros;
-    # reprocessar o que não mudou é inofensivo.
-    sync_cursor_overlap_hours: int = 24
     # Domínio usado quando o servidor não tem e-mail no i-Educar.
     placeholder_email_domain: str = "sem-email.invalid"
 

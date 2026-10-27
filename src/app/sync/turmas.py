@@ -14,7 +14,7 @@ que difere do que a integração já criou:
      curso é ocultado. As inscrições de cursos ocultos não são alteradas, para
      preservar o histórico.
   4. Professores: inscritos nos cursos dos componentes dos seus vínculos ativos e
-     desinscritos quando o vínculo sai. Os vínculos e os usuários vêm do caso 1.
+     desinscritos quando o vínculo sai. Os usuários vêm do caso 1.
 """
 
 import logging
@@ -408,14 +408,14 @@ class TurmaSync:
 
         desejadas: set[Par] = set()
         sem_curso: set[Par] = set()
-        for servidor_id, turma_id, componentes in self._repo.list_vinculos_ativos(ano):
-            user_id = usuarios.get(servidor_id)
-            if user_id is None:
+        for vinculo in await self._ieducar.listar_vinculos(ano, result.escolas):
+            user_id = usuarios.get(vinculo.servidor_id)
+            if not vinculo.ativo or user_id is None:
                 continue
-            for componente_id in componentes:
-                curso = cursos.get((turma_id, componente_id))
+            for componente_id in vinculo.componentes:
+                curso = cursos.get((vinculo.turma_id, componente_id))
                 if curso is None:
-                    sem_curso.add((turma_id, componente_id))
+                    sem_curso.add((vinculo.turma_id, componente_id))
                 elif curso.visible:
                     desejadas.add((curso.moodle_course_id, user_id))
         if sem_curso:

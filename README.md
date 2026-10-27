@@ -66,10 +66,9 @@ andamento da escola. Servidores sem turma (secretaria, direção etc.) não vão
 ```mermaid
 flowchart TD
     A([Sincronização periódica ou POST /sync/professores]) --> B["Escola ativa e ano letivo em andamento<br/>info-escolas · escola-ano-letivo"]
-    B --> C["Vínculos alterados desde o cursor<br/>servidores-disciplinas-turmas"]
-    C --> D[("Cópia local dos vínculos<br/>SQLite")]
-    B --> E["Servidores alterados desde o cursor<br/>servidores"]
-    D --> F{"Para cada servidor afetado:<br/>ativo e com turma?"}
+    B --> C["Vínculos do ano<br/>servidores-disciplinas-turmas"]
+    B --> E["Servidores da instituição<br/>servidores"]
+    C --> F{"Para cada servidor com turma ou já mapeado:<br/>ativo e com turma?"}
     E --> F
     F --> G{"Já existe no Moodle?<br/>mapeamento local ou idnumber"}
     G -- "não, é professor" --> H["core_user_create_users"]
@@ -83,18 +82,21 @@ flowchart TD
 
 - **Identidade:** o vínculo com o i-Educar fica no `idnumber` do usuário do Moodle e não
   depende de CPF ou e-mail. O login é o CPF (só números) ou `servidor<id>` sem CPF.
-- **Leitura incremental:** a API do i-Educar aceita `modified`; a integração guarda um
-  cursor por tipo de dado. Como o i-Educar grava datas ora em UTC (código legado), ora no
-  fuso da aplicação (models Laravel), o cursor é recuado por `SYNC_CURSOR_OVERLAP_HOURS`.
+- **Incremental na escrita:** cada execução lê todos os vínculos do ano e todos os
+  servidores (duas chamadas), mas só envia ao Moodle quem mudou desde a última execução
+  (`updated_at` ou situação diferentes do mapeamento). Os três casos seguem a mesma regra.
+  A API aceita `modified` para leitura incremental, mas o i-Educar grava datas ora em UTC,
+  ora no fuso da aplicação, e um cursor exigiria margem de releitura e uma lista de
+  pendentes para não perder alterações; ler tudo é simples e barato no volume de uma rede.
 - **Remoções:** vínculo excluído no i-Educar (ou servidor desativado ou removido) suspende
-  o usuário; um novo vínculo o reativa. Usuários nunca são apagados. A cada execução, quem
-  está ativo no Moodle sem turma no ano letivo também é suspenso, o que cobre a troca de
-  ano letivo e vínculos transferidos para outro servidor.
+  o usuário; um novo vínculo o reativa. Usuários nunca são apagados. Quem está ativo no
+  Moodle sem turma no ano letivo também é suspenso, o que cobre a troca de ano letivo e
+  vínculos transferidos para outro servidor.
 - **Contas existentes:** se já houver no Moodle um usuário sem `idnumber` com o login do
   servidor, ele passa a ser mantido pela integração. Se o e-mail do servidor já pertencer
   a outro usuário do Moodle, usa-se o e-mail provisório.
-- **Falhas:** um servidor que falha não interrompe os demais e é reavaliado na próxima
-  execução. `completo=true` reenvia todos os servidores ao Moodle, desfazendo alterações
+- **Falhas:** um servidor que falha não interrompe os demais e, como o mapeamento não é
+  atualizado, é reenviado na próxima execução. `completo=true` reenvia todos os servidores ao Moodle, desfazendo alterações
   feitas direto nele (e recriando usuários excluídos lá).
 
 **Decisões e limitações**
@@ -142,9 +144,8 @@ flowchart TD
   ocultado (`visible = 0`) e suas inscrições não são alteradas, para preservar o
   histórico. Reativar a turma volta a exibir o curso.
 - **Professores:** inscritos como `editingteacher` nos cursos dos componentes dos seus
-  vínculos ativos e desinscritos quando o vínculo sai. Usa os usuários e a cópia local dos
-  vínculos mantidos pelo caso 1, por isso a sincronização periódica roda professores antes
-  de turmas. Só as inscrições feitas pela integração são desfeitas; as criadas à mão no
+  vínculos ativos e desinscritos quando o vínculo sai. Usa os usuários mantidos pelo caso 1,
+  por isso a sincronização periódica roda professores antes de turmas. Só as inscrições feitas pela integração são desfeitas; as criadas à mão no
   Moodle não são tocadas. Componentes de vínculos sem curso (por exemplo, componentes
   diferenciados da turma) aparecem em `componentes_sem_curso` e no log.
 - **Limitação:** componentes definidos só para uma turma específica ("componentes
@@ -283,7 +284,7 @@ viram usuários com 1.770 inscrições (10 alunos por turma × os componentes da
 |---|---|---|
 | `GET`  | `/health` | Aplicação no ar |
 | `GET`  | `/health/dependencias` | Autenticação no i-Educar e no Moodle; escolas ativas e ano letivo |
-| `POST` | `/sync/professores?completo=false` | Sincronização manual; `completo=true` ignora os cursores e reenvia todos ao Moodle |
+| `POST` | `/sync/professores?completo=false` | Sincronização manual; `completo=true` reenvia todos ao Moodle, mesmo sem mudança |
 | `POST` | `/sync/turmas?completo=false` | Cursos de turma × componente e inscrição de professores; `completo=true` reenvia todos ao Moodle |
 | `POST` | `/sync/alunos?completo=false` | Alunos enturmados como usuários e inscrição nos cursos da turma (menos dispensas); `completo=true` reenvia todos ao Moodle |
 | `GET`  | `/sync/execucoes` | Histórico das execuções (manuais e agendadas) |
@@ -302,7 +303,6 @@ Variáveis da aplicação de integração (serviço `integration` no `docker-com
 | `IEDUCAR_ESCOLA_ID` | — | Escola a sincronizar. Sem valor, usa as escolas ativas |
 | `IEDUCAR_ANO_LETIVO` | — | Ano letivo. Sem valor, usa o ano em andamento da escola |
 | `SYNC_INTERVAL_SECONDS` | `300` | Intervalo da sincronização periódica; `0` desativa |
-| `SYNC_CURSOR_OVERLAP_HOURS` | `24` | Margem de releitura das consultas incrementais |
 | `MOODLE_TOKEN` | — | Sobrescreve o token gerado pelo `moodle-setup` |
 
 Variáveis do ambiente, que podem ficar num `.env` na raiz do projeto:
@@ -351,7 +351,7 @@ uv run ty check
 ├── src/app/
 │   ├── main.py               # FastAPI: rotas e agendador
 │   ├── config.py             # Variáveis de ambiente e dados do moodle-setup
-│   ├── db.py                 # SQLite: mapeamentos, vínculos, cursores, execuções
+│   ├── db.py                 # SQLite: mapeamentos e execuções
 │   ├── clients/ieducar.py    # Cliente da API legada do i-Educar
 │   ├── clients/moodle.py     # Cliente dos Web Services REST do Moodle
 │   └── sync/

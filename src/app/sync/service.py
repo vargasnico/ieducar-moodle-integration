@@ -3,7 +3,6 @@ import json
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import asdict
-from datetime import timedelta
 from typing import Any, TypeVar
 
 import httpx
@@ -90,9 +89,6 @@ class SyncService:
                 self._settings.placeholder_email_domain,
                 escola_id=self._settings.ieducar_escola_id,
                 ano_letivo=self._settings.ieducar_ano_letivo,
-                cursor_overlap=timedelta(
-                    hours=self._settings.sync_cursor_overlap_hours
-                ),
             ).run(completo=completo)
 
         return await self._executar("professores", trigger, run)

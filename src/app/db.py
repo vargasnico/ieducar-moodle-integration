@@ -6,8 +6,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from app.clients.ieducar import Vinculo
-
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS professor_mapping (
     servidor_id        INTEGER PRIMARY KEY,
@@ -17,21 +15,6 @@ CREATE TABLE IF NOT EXISTS professor_mapping (
     ieducar_updated_at TEXT    NOT NULL,
     synced_at          TEXT    NOT NULL
 );
-
--- Cópia local dos vínculos professor ↔ turma do i-Educar. A API só devolve os
--- vínculos alterados desde o cursor; guardá-los permite saber se um servidor
--- ainda tem alguma turma depois de perder uma.
-CREATE TABLE IF NOT EXISTS professor_vinculo (
-    vinculo_id  INTEGER PRIMARY KEY,
-    servidor_id INTEGER NOT NULL,
-    turma_id    INTEGER NOT NULL,
-    ano         INTEGER NOT NULL,
-    componentes TEXT    NOT NULL,
-    ativo       INTEGER NOT NULL,
-    updated_at  TEXT    NOT NULL
-);
-CREATE INDEX IF NOT EXISTS professor_vinculo_servidor
-    ON professor_vinculo (servidor_id, ano);
 
 -- Curso do Moodle de cada turma × componente curricular do i-Educar.
 CREATE TABLE IF NOT EXISTS curso_mapping (
@@ -69,11 +52,6 @@ CREATE TABLE IF NOT EXISTS aluno_inscricao (
     moodle_user_id   INTEGER NOT NULL,
     synced_at        TEXT    NOT NULL,
     PRIMARY KEY (moodle_course_id, moodle_user_id)
-);
-
-CREATE TABLE IF NOT EXISTS sync_state (
-    key   TEXT PRIMARY KEY,
-    value TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS sync_run (
@@ -142,21 +120,6 @@ class Repository:
         finally:
             conn.close()
 
-    def get_state(self, key: str) -> str | None:
-        with self._connect() as conn:
-            row = conn.execute(
-                "SELECT value FROM sync_state WHERE key = ?", (key,)
-            ).fetchone()
-        return row["value"] if row else None
-
-    def set_state(self, key: str, value: str) -> None:
-        with self._connect() as conn:
-            conn.execute(
-                "INSERT INTO sync_state (key, value) VALUES (?, ?)"
-                " ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                (key, value),
-            )
-
     def get_professor(self, servidor_id: int) -> ProfessorMapping | None:
         with self._connect() as conn:
             row = conn.execute(
@@ -200,76 +163,6 @@ class Repository:
             conn.execute(
                 "DELETE FROM professor_mapping WHERE servidor_id = ?", (servidor_id,)
             )
-
-    def list_professores_sem_turma(self, ano: int) -> list[int]:
-        """Servidores ativos no Moodle sem nenhum vínculo ativo no ano (devem ser suspensos)."""
-        with self._connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT m.servidor_id FROM professor_mapping m
-                WHERE m.ativo = 1 AND NOT EXISTS (
-                    SELECT 1 FROM professor_vinculo v
-                    WHERE v.servidor_id = m.servidor_id AND v.ano = ? AND v.ativo = 1
-                )
-                """,
-                (ano,),
-            ).fetchall()
-        return [int(r["servidor_id"]) for r in rows]
-
-    def save_vinculos(self, ano: int, vinculos: Iterable[Vinculo]) -> None:
-        with self._connect() as conn:
-            conn.executemany(
-                """
-                INSERT INTO professor_vinculo
-                    (vinculo_id, servidor_id, turma_id, ano, componentes, ativo, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(vinculo_id) DO UPDATE SET
-                    servidor_id = excluded.servidor_id,
-                    turma_id = excluded.turma_id,
-                    ano = excluded.ano,
-                    componentes = excluded.componentes,
-                    ativo = excluded.ativo,
-                    updated_at = excluded.updated_at
-                """,
-                (
-                    (
-                        v.vinculo_id,
-                        v.servidor_id,
-                        v.turma_id,
-                        ano,
-                        ",".join(str(c) for c in v.componentes),
-                        int(v.ativo),
-                        v.updated_at,
-                    )
-                    for v in vinculos
-                ),
-            )
-
-    def count_turmas_ativas(self, servidor_id: int, ano: int) -> int:
-        with self._connect() as conn:
-            row = conn.execute(
-                "SELECT COUNT(DISTINCT turma_id) AS n FROM professor_vinculo"
-                " WHERE servidor_id = ? AND ano = ? AND ativo = 1",
-                (servidor_id, ano),
-            ).fetchone()
-        return int(row["n"])
-
-    def list_vinculos_ativos(self, ano: int) -> list[tuple[int, int, tuple[int, ...]]]:
-        """(servidor_id, turma_id, componentes) dos vínculos ativos do ano."""
-        with self._connect() as conn:
-            rows = conn.execute(
-                "SELECT servidor_id, turma_id, componentes FROM professor_vinculo"
-                " WHERE ano = ? AND ativo = 1",
-                (ano,),
-            ).fetchall()
-        return [
-            (
-                int(r["servidor_id"]),
-                int(r["turma_id"]),
-                tuple(int(c) for c in r["componentes"].split(",") if c),
-            )
-            for r in rows
-        ]
 
     def list_cursos(self, ano: int | None = None) -> list[CursoMapping]:
         with self._connect() as conn:

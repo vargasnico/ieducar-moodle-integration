@@ -9,22 +9,18 @@ inscrição em cada curso (turma × componente curricular), no caso de turmas.
 
 Fluxo de uma execução:
   1. Descobre a escola e o ano letivo em andamento (ou usa os configurados).
-  2. Lê os vínculos alterados desde o último cursor e atualiza a cópia local.
-  3. Lê os servidores alterados desde o último cursor (nome, e-mail, situação).
-  4. Para cada servidor afetado, decide se é professor e:
+  2. Lê todos os vínculos do ano e todos os servidores da instituição.
+  3. Para cada servidor com turma ou já mapeado, decide se é professor e:
        - não existe no Moodle e é professor  → core_user_create_users
        - existe e é professor                → atualiza nome/e-mail e reativa
        - existe e deixou de ser professor    → suspende
-     Afetados são os de vínculo ou cadastro alterado, os que falharam antes e os
-     ativos no Moodle sem turma no ano (troca de ano letivo, vínculo transferido).
-  5. Registra o mapeamento i-Educar ↔ Moodle.
+     Só envia ao Moodle quem mudou desde a última execução.
+  4. Registra o mapeamento i-Educar ↔ Moodle.
 """
 
-import json
 import logging
 import re
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
 
 import httpx
 
@@ -35,18 +31,12 @@ from app.sync.contexto import resolver_contexto
 
 log = logging.getLogger(__name__)
 
-SERVIDORES_CURSOR = "servidores.cursor"
-PENDENTES_KEY = "professores.pendentes"
 # Avisos de core_user_update_users para um usuário que não existe mais no Moodle.
 USUARIO_REMOVIDO = {"invaliduserid", "usernotupdateddeleted"}
 
 
 class ConflitoError(Exception):
     """O login do servidor já pertence a outro usuário do Moodle."""
-
-
-def vinculos_cursor_key(ano: int) -> str:
-    return f"vinculos.{ano}.cursor"
 
 
 def idnumber_for(servidor_id: int) -> str:
@@ -97,7 +87,6 @@ class ProfessorSync:
         placeholder_email_domain: str,
         escola_id: int | None = None,
         ano_letivo: int | None = None,
-        cursor_overlap: timedelta = timedelta(hours=24),
     ) -> None:
         self._ieducar = ieducar
         self._moodle = moodle
@@ -105,15 +94,6 @@ class ProfessorSync:
         self._email_domain = placeholder_email_domain
         self._escola_id = escola_id
         self._ano_letivo = ano_letivo
-        self._cursor_overlap = cursor_overlap
-
-    def _since(self, cursor_key: str) -> str | None:
-        """Valor de `modified` para a API: o cursor salvo menos a margem de sobreposição."""
-        cursor = self._repo.get_state(cursor_key)
-        if not cursor:
-            return None
-        since = datetime.fromisoformat(cursor) - self._cursor_overlap
-        return since.strftime("%Y-%m-%d %H:%M:%S")
 
     async def run(self, completo: bool = False) -> SyncResult:
         result = SyncResult()
@@ -126,74 +106,44 @@ class ProfessorSync:
             return result
         ano = contexto.ano
 
-        # Vínculos: atualizam a cópia local antes de qualquer decisão.
-        vinculos_key = vinculos_cursor_key(ano)
-        vinculos = await self._ieducar.listar_vinculos(
-            ano,
-            result.escolas,
-            modified=None if completo else self._since(vinculos_key),
-        )
-        self._repo.save_vinculos(ano, vinculos)
+        vinculos = await self._ieducar.listar_vinculos(ano, result.escolas)
         result.vinculos_lidos = len(vinculos)
+        com_turma = {v.servidor_id for v in vinculos if v.ativo}
+        servidores = {s.servidor_id: s for s in await self._ieducar.listar_servidores()}
 
-        servidores = await self._ieducar.listar_servidores(
-            modified=None if completo else self._since(SERVIDORES_CURSOR)
-        )
-        listados = {s.servidor_id: s for s in servidores}
-
-        # Servidores afetados: os de vínculos alterados, os de cadastro alterado, os
-        # que falharam na execução anterior e os ativos no Moodle sem turma no ano
-        # (troca de ano letivo, vínculo transferido para outro servidor...).
-        pendentes = set(json.loads(self._repo.get_state(PENDENTES_KEY) or "[]"))
-        candidatos = (
-            {v.servidor_id for v in vinculos}
-            | set(listados)
-            | pendentes
-            | set(self._repo.list_professores_sem_turma(ano))
-        )
-        if completo:
-            # Inclui quem já foi mapeado e não aparece mais na listagem do i-Educar.
-            candidatos |= {m.servidor_id for m in self._repo.list_professores()}
-        falhas: set[int] = set()
+        # Quem tem turma e quem já tem usuário no Moodle (pode ter de ser suspenso).
+        candidatos = com_turma | {m.servidor_id for m in self._repo.list_professores()}
         for servidor_id in sorted(candidatos):
             result.avaliados += 1
             try:
                 await self._sync_one(
-                    servidor_id, ano, result, listados.get(servidor_id), completo
+                    servidor_id,
+                    servidor_id in com_turma,
+                    result,
+                    servidores.get(servidor_id),
+                    completo,
                 )
             except (IEducarError, MoodleError, ConflitoError, httpx.HTTPError) as exc:
                 log.warning("Falha ao sincronizar servidor %s: %s", servidor_id, exc)
                 result.erros.append(f"servidor {servidor_id}: {exc}")
-                falhas.add(servidor_id)
             except Exception as exc:
-                # Um registro inesperado não interrompe os demais nem descarta os pendentes.
+                # Um registro inesperado não interrompe os demais.
                 log.exception("Erro inesperado ao sincronizar servidor %s", servidor_id)
                 result.erros.append(f"servidor {servidor_id}: {exc!r}")
-                falhas.add(servidor_id)
-
-        # Os cursores sempre avançam; quem falhou fica em "pendentes" e é
-        # reavaliado na próxima execução, mesmo sem nova alteração no i-Educar.
-        if vinculos:
-            self._repo.set_state(vinculos_key, max(v.updated_at for v in vinculos))
-        if servidores:
-            self._repo.set_state(
-                SERVIDORES_CURSOR, max(s.updated_at for s in servidores)
-            )
-        self._repo.set_state(PENDENTES_KEY, json.dumps(sorted(falhas)))
         return result
 
     async def _sync_one(
         self,
         servidor_id: int,
-        ano: int,
+        tem_turma: bool,
         result: SyncResult,
         listado: Servidor | None,
         forcar: bool,
     ) -> None:
-        """`listado` é o servidor vindo da listagem, se veio; `forcar` reenvia ao Moodle
-        mesmo sem alteração no i-Educar (corrige mudanças feitas direto no Moodle)."""
+        """`listado` é o servidor vindo da listagem (None se não existe mais); `forcar`
+        reenvia ao Moodle mesmo sem alteração no i-Educar (corrige mudanças feitas direto
+        no Moodle)."""
         mapping = self._repo.get_professor(servidor_id)
-        tem_turma = self._repo.count_turmas_ativas(servidor_id, ano) > 0
         # A listagem já traz situação e updated_at: sem mudança, nem busca o servidor.
         if (
             not forcar
@@ -204,7 +154,8 @@ class ProfessorSync:
             result.inalterados += 1
             return
 
-        servidor = await self._ieducar.obter_servidor(servidor_id)
+        # A listagem não traz o e-mail: só busca o servidor quando vai enviar ao Moodle.
+        servidor = await self._ieducar.obter_servidor(servidor_id) if listado else None
         if servidor is None:
             await self._suspender_removido(mapping, result)
             return
