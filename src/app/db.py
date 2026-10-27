@@ -306,20 +306,31 @@ class Repository:
             ).fetchall()
         return {(int(r["moodle_course_id"]), int(r["moodle_user_id"])) for r in rows}
 
-    def save_professor_inscricao(self, course_id: int, user_id: int) -> None:
+    def save_professor_inscricoes(self, pares: Iterable[tuple[int, int]]) -> None:
+        """Grava pares (moodle_course_id, moodle_user_id)."""
+        agora = now()
         with self._connect() as conn:
-            conn.execute(
+            conn.executemany(
                 "INSERT OR REPLACE INTO professor_inscricao"
                 " (moodle_course_id, moodle_user_id, synced_at) VALUES (?, ?, ?)",
-                (course_id, user_id, now()),
+                ((course_id, user_id, agora) for course_id, user_id in pares),
             )
 
-    def delete_professor_inscricao(self, course_id: int, user_id: int) -> None:
+    def delete_professor_inscricoes(self, pares: Iterable[tuple[int, int]]) -> None:
+        """Remove pares (moodle_course_id, moodle_user_id)."""
         with self._connect() as conn:
-            conn.execute(
+            conn.executemany(
                 "DELETE FROM professor_inscricao"
                 " WHERE moodle_course_id = ? AND moodle_user_id = ?",
-                (course_id, user_id),
+                pares,
+            )
+
+    def delete_inscricoes_do_curso(self, course_id: int) -> None:
+        """Esquece as inscrições de um curso que não existe mais no Moodle."""
+        with self._connect() as conn:
+            conn.execute(
+                "DELETE FROM professor_inscricao WHERE moodle_course_id = ?",
+                (course_id,),
             )
 
     def start_run(self, entity: str, trigger: str) -> int:

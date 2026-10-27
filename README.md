@@ -138,14 +138,15 @@ flowchart TD
   `<ano>-T<turma>-C<componente>` e nome completo `<turma> – <componente> (<ano>)`.
 - **Estado desejado:** cada execução lê todas as turmas do ano (uma chamada, mais uma por
   série) e só envia ao Moodle o que difere do que a integração já criou.
-- **Turma desativada ou componente retirado da série:** o curso é ocultado (`visible = 0`)
-  e suas inscrições não são alteradas, para preservar o histórico. Reativar a turma volta
-  a exibir o curso.
+- **Turma desativada, componente retirado da série ou troca de ano letivo:** o curso é
+  ocultado (`visible = 0`) e suas inscrições não são alteradas, para preservar o
+  histórico. Reativar a turma volta a exibir o curso.
 - **Professores:** inscritos como `editingteacher` nos cursos dos componentes dos seus
   vínculos ativos e desinscritos quando o vínculo sai. Usa os usuários e a cópia local dos
   vínculos mantidos pelo caso 1, por isso a sincronização periódica roda professores antes
   de turmas. Só as inscrições feitas pela integração são desfeitas; as criadas à mão no
-  Moodle não são tocadas.
+  Moodle não são tocadas. Componentes de vínculos sem curso (por exemplo, componentes
+  diferenciados da turma) aparecem em `componentes_sem_curso` e no log.
 - **Limitação:** componentes definidos só para uma turma específica ("componentes
   curriculares diferenciados" no cadastro da turma) não são considerados; os cursos seguem
   os componentes da série na escola.

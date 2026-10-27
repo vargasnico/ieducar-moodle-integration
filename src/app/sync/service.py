@@ -10,7 +10,7 @@ import httpx
 
 from app.clients.ieducar import IEducarClient
 from app.clients.moodle import MoodleClient
-from app.config import Settings, load_moodle_setup
+from app.config import MoodleSetup, Settings, load_moodle_setup
 from app.db import Repository
 from app.sync.professores import ProfessorSync, SyncResult
 from app.sync.turmas import TurmaSync, TurmaSyncResult
@@ -51,8 +51,9 @@ class SyncService:
             self._settings.ieducar_instituicao_id,
         )
 
-    def moodle(self) -> MoodleClient:
-        return MoodleClient(self._moodle_http, load_moodle_setup(self._settings).token)
+    def moodle(self, setup: MoodleSetup | None = None) -> MoodleClient:
+        setup = setup or load_moodle_setup(self._settings)
+        return MoodleClient(self._moodle_http, setup.token)
 
     async def _executar(
         self, entity: str, trigger: str, run: Callable[[], Awaitable[R]]
@@ -102,7 +103,7 @@ class SyncService:
             setup = load_moodle_setup(self._settings)
             return TurmaSync(
                 self.ieducar(),
-                MoodleClient(self._moodle_http, setup.token),
+                self.moodle(setup),
                 self._repo,
                 setup,
                 escola_id=self._settings.ieducar_escola_id,

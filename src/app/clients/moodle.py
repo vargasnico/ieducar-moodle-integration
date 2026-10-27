@@ -108,18 +108,25 @@ class MoodleClient:
         )
         return int(created[0]["id"])
 
-    async def get_course_by_field(
+    async def get_courses_by_field(
         self, field: str, value: str
-    ) -> dict[str, Any] | None:
+    ) -> list[dict[str, Any]]:
         result = await self.call(
             "core_course_get_courses_by_field", field=field, value=value
         )
         courses = result.get("courses") if isinstance(result, dict) else None
+        return courses or []
+
+    async def get_course_by_field(
+        self, field: str, value: str
+    ) -> dict[str, Any] | None:
+        courses = await self.get_courses_by_field(field, value)
         return courses[0] if courses else None
 
-    async def create_course(self, course: dict[str, Any]) -> int:
-        created = await self.call("core_course_create_courses", courses=[course])
-        return int(created[0]["id"])
+    async def create_courses(self, courses: list[dict[str, Any]]) -> dict[str, int]:
+        """Cria em uma transação (um curso inválido desfaz o lote); devolve shortname → id."""
+        created = await self.call("core_course_create_courses", courses=courses)
+        return {str(c["shortname"]): int(c["id"]) for c in created}
 
     async def update_course(self, course: dict[str, Any]) -> None:
         # Como em core_user_update_users, erros por curso voltam como warnings.
@@ -132,15 +139,23 @@ class MoodleClient:
                 str(warnings[0].get("message", "")),
             )
 
-    async def enrol_user(self, role_id: int, user_id: int, course_id: int) -> None:
-        """Inscrição manual; reinscrever quem já está inscrito não tem efeito."""
+    async def enrol_users(self, role_id: int, pares: list[tuple[int, int]]) -> None:
+        """Inscrição manual de pares (course_id, user_id), em uma transação; reinscrever
+        quem já está inscrito não tem efeito."""
         await self.call(
             "enrol_manual_enrol_users",
-            enrolments=[{"roleid": role_id, "userid": user_id, "courseid": course_id}],
+            enrolments=[
+                {"roleid": role_id, "userid": user_id, "courseid": course_id}
+                for course_id, user_id in pares
+            ],
         )
 
-    async def unenrol_user(self, user_id: int, course_id: int) -> None:
+    async def unenrol_users(self, pares: list[tuple[int, int]]) -> None:
+        """Remove inscrições manuais de pares (course_id, user_id), em uma transação."""
         await self.call(
             "enrol_manual_unenrol_users",
-            enrolments=[{"userid": user_id, "courseid": course_id}],
+            enrolments=[
+                {"userid": user_id, "courseid": course_id}
+                for course_id, user_id in pares
+            ],
         )
