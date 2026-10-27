@@ -6,12 +6,15 @@
 //   docker compose exec -T php sh -c "cat > /tmp/seed.php" < scripts/ieducar_seed.php
 //   docker compose exec php php artisan tinker --execute="require '/tmp/seed.php';"
 //
-// 1. Dá nome completo e único a cada aluno: o DemoSeeder grava só um primeiro nome,
-//    que se repete entre alunos e parece duplicado no Moodle.
+// 1. Deixa as pessoas do DemoSeeder com cara de reais. Ele grava só um primeiro nome
+//    (que se repete e parece duplicado no Moodle), pai e mãe de sexo aleatório,
+//    e-mails aleatórios em domínios reais e tipo jurídico em parte das pessoas
+//    físicas. Cada aluno ganha os sobrenomes da mãe e do pai, e cada pessoa um
+//    e-mail derivado do nome no domínio reservado .example.
 // 2. Cria quatro servidores, um para cada situação da regra "professor = servidor
 //    ativo com vínculo ativo com turma no ano letivo".
-// Pode ser executado de novo: alunos que já têm sobrenome e servidores que já
-// existem (pelo nome) são mantidos.
+// Pode ser executado de novo: só mexe em nomes sem sobrenome, em e-mails fora de
+// .example e em servidores que ainda não existem (pelo nome).
 
 use App\Models\LegacyRole;
 use App\Models\LegacySchoolClass;
@@ -25,29 +28,81 @@ use Database\Factories\LegacySchoolClassTeacherDisciplineFactory;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 
-// 1. Nomes completos e únicos para os alunos (semente fixa: mesmo resultado sempre).
+// 1. Pessoas: nomes, e-mails e tipo (semente fixa: mesmo resultado sempre).
 $faker = Faker\Factory::create('pt_BR');
 $faker->seed(2026);
 $usados = array_flip(DB::table('cadastro.pessoa')->whereNotNull('nome')->pluck('nome')->all());
-$alunos = DB::table('pmieducar.aluno as a')
-    ->join('cadastro.pessoa as p', 'p.idpes', '=', 'a.ref_idpes')
-    ->where('p.nome', 'not like', '% %')
-    ->orderBy('a.cod_aluno')
-    ->get(['p.idpes', 'p.nome']);
-foreach ($alunos as $aluno) {
+$atualizar = fn (int $idpes, array $dados) => DB::table('cadastro.pessoa')
+    ->where('idpes', $idpes)->update($dados + ['data_rev' => now()]);
+$renomear = function (int $idpes, callable $gerar) use (&$usados, $atualizar) {
     do {
-        $nome = "{$aluno->nome} {$faker->lastName()} {$faker->lastName()}";
+        $nome = $gerar();
     } while (isset($usados[$nome]));
     $usados[$nome] = true;
-    DB::table('cadastro.pessoa')->where('idpes', $aluno->idpes)->update([
-        'nome' => $nome,
-        'slug' => Str::lower(Str::slug($nome, ' ')),
-        'data_rev' => now(),
-    ]);
+    $atualizar($idpes, ['nome' => $nome, 'slug' => Str::lower(Str::slug($nome, ' '))]);
+    return $nome;
+};
+
+$familias = DB::table('pmieducar.aluno as a')
+    ->join('cadastro.pessoa as p', 'p.idpes', '=', 'a.ref_idpes')
+    ->join('cadastro.fisica as f', 'f.idpes', '=', 'a.ref_idpes')
+    ->leftJoin('cadastro.pessoa as mae', 'mae.idpes', '=', 'f.idpes_mae')
+    ->leftJoin('cadastro.pessoa as pai', 'pai.idpes', '=', 'f.idpes_pai')
+    ->orderBy('a.cod_aluno')
+    ->get(['p.idpes', 'p.nome', 'f.idpes_mae', 'mae.nome as mae', 'f.idpes_pai', 'pai.nome as pai']);
+$renomeados = 0;
+foreach ($familias as $familia) {
+    $nome = $familia->nome;
+    if (!str_contains($nome, ' ')) {
+        // Primeiro nome + sobrenome da mãe + sobrenome do pai.
+        $nome = $renomear($familia->idpes, fn () => "{$nome} {$faker->lastName()} {$faker->lastName()}");
+        $renomeados++;
+    }
+    $sobrenomes = array_slice(explode(' ', $nome), 1);
+    if ($familia->idpes_mae && !str_contains($familia->mae, ' ')) {
+        $renomear($familia->idpes_mae, fn () => "{$faker->firstNameFemale()} {$sobrenomes[0]}");
+        $renomeados++;
+    }
+    if ($familia->idpes_pai && !str_contains($familia->pai, ' ')) {
+        $renomear($familia->idpes_pai, fn () => "{$faker->firstNameMale()} " . end($sobrenomes));
+        $renomeados++;
+    }
 }
-echo $alunos->isEmpty()
-    ? "= alunos já têm nome completo\n"
-    : "+ nome completo para {$alunos->count()} aluno(s)\n";
+echo $renomeados ? "+ nome completo para {$renomeados} pessoa(s)\n" : "= pessoas já têm nome completo\n";
+
+// E-mail a partir do nome; .example é reservado, então nenhuma mensagem chega a alguém.
+$emails = array_flip(DB::table('cadastro.pessoa')->whereNotNull('email')->pluck('email')->all());
+$semEmail = DB::table('cadastro.pessoa as p')
+    ->join('cadastro.fisica as f', 'f.idpes', '=', 'p.idpes')
+    ->where('p.nome', 'like', '% %')
+    ->where(fn ($q) => $q->whereNull('p.email')->orWhere('p.email', 'not like', '%.example'))
+    ->orderBy('p.idpes')
+    ->get(['p.idpes', 'p.nome']);
+foreach ($semEmail as $pessoa) {
+    $partes = explode(' ', Str::lower(Str::ascii($pessoa->nome)));
+    $base = $partes[0] . '.' . end($partes);
+    for ($email = "{$base}@email.example", $n = 2; isset($emails[$email]); $n++) {
+        $email = "{$base}{$n}@email.example";
+    }
+    $emails[$email] = true;
+    $atualizar($pessoa->idpes, ['email' => $email]);
+}
+$escolas = DB::table('cadastro.pessoa as p')
+    ->join('pmieducar.escola as e', 'e.ref_idpes', '=', 'p.idpes')
+    ->where('p.email', 'not like', '%.example')
+    ->get(['p.idpes', 'p.nome']);
+foreach ($escolas as $escola) {
+    $atualizar($escola->idpes, ['email' => 'secretaria@' . Str::slug($escola->nome) . '.example']);
+}
+$corrigidos = $semEmail->count() + $escolas->count();
+echo $corrigidos ? "+ e-mail derivado do nome para {$corrigidos} pessoa(s)\n" : "= e-mails já derivados dos nomes\n";
+
+// Pessoas físicas (com cadastro.fisica) que o DemoSeeder gravou como jurídicas.
+$tipos = DB::table('cadastro.pessoa')->where('tipo', 'J')
+    ->whereIn('idpes', DB::table('cadastro.fisica')->select('idpes'))
+    ->whereNotIn('idpes', DB::table('cadastro.juridica')->select('idpes'))
+    ->update(['tipo' => 'F']);
+echo $tipos ? "+ tipo físico para {$tipos} pessoa(s)\n" : "= tipos já corretos\n";
 
 // 2. Servidores.
 
