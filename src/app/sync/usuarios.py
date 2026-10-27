@@ -13,9 +13,8 @@ from typing import Any
 
 import httpx
 
-from app.clients.ieducar import IEducarError
-from app.clients.moodle import MoodleError
 from app.db import UsuarioMapping
+from app.interfaces import IEducarError, MoodleError
 from app.sync.base import Sincronizacao
 from app.sync.idempotencia import LOTE, ConflitoError, enviar_em_lotes, localizar
 

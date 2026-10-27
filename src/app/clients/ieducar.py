@@ -1,102 +1,22 @@
 import logging
-from dataclasses import dataclass
 from typing import Any
 
 import httpx
 
+from app.domain import (
+    Aluno,
+    ComponenteCurricular,
+    Dispensa,
+    Enturmacao,
+    Escola,
+    Matricula,
+    Servidor,
+    Turma,
+    Vinculo,
+)
+from app.interfaces import IEducarError
+
 log = logging.getLogger(__name__)
-
-
-class IEducarError(Exception):
-    pass
-
-
-@dataclass(frozen=True)
-class Servidor:
-    servidor_id: int
-    nome: str
-    cpf: str | None
-    ativo: bool
-    updated_at: str
-    email: str | None = None
-
-
-@dataclass(frozen=True)
-class Escola:
-    escola_id: int
-    nome: str
-    ativo: bool
-
-
-@dataclass(frozen=True)
-class Vinculo:
-    """Alocação de um servidor como professor numa turma (modules.professor_turma)."""
-
-    vinculo_id: int
-    servidor_id: int
-    turma_id: int
-    componentes: tuple[int, ...]
-    ativo: bool
-    updated_at: str
-
-
-@dataclass(frozen=True)
-class Turma:
-    turma_id: int
-    nome: str
-    ano: int
-    escola_id: int
-    # Uma turma multisseriada tem mais de uma série.
-    series: tuple[int, ...]
-    ativo: bool
-    updated_at: str
-
-
-@dataclass(frozen=True)
-class ComponenteCurricular:
-    componente_id: int
-    nome: str
-    abreviatura: str
-
-
-@dataclass(frozen=True)
-class Aluno:
-    aluno_id: int
-    nome: str
-    nome_social: str | None
-    ativo: bool
-    updated_at: str
-
-
-@dataclass(frozen=True)
-class Matricula:
-    """Vínculo do aluno com uma série num ano (muda a cada rematrícula)."""
-
-    matricula_id: int
-    aluno_id: int
-    escola_id: int
-    ativo: bool
-
-
-@dataclass(frozen=True)
-class Enturmacao:
-    """Matrícula alocada numa turma (pmieducar.matricula_turma)."""
-
-    enturmacao_id: int
-    matricula_id: int
-    turma_id: int
-    serie_id: int
-    # Sem exclusão e sem data de saída. Transferência, remanejamento, abandono e
-    # falecimento mantêm deleted_at vazio (o aluno segue no diário) e só preenchem
-    # a data de saída.
-    ativa: bool
-
-
-@dataclass(frozen=True)
-class Dispensa:
-    matricula_id: int
-    componente_id: int
-    ativa: bool
 
 
 def _ativo(value: Any) -> bool:
@@ -104,7 +24,7 @@ def _ativo(value: Any) -> bool:
 
 
 class IEducarClient:
-    """Cliente da API legada do i-Educar (/module/Api/*), autenticada por access_key."""
+    """Implementa `IEducar` sobre a API legada (/module/Api/*), autenticada por access_key."""
 
     def __init__(
         self, http: httpx.AsyncClient, access_key: str, instituicao_id: int
@@ -117,7 +37,9 @@ class IEducarClient:
         self, controller: str, resource: str, **params: Any
     ) -> dict[str, Any]:
         query = {"oper": "get", "resource": resource, "access_key": self._access_key}
-        query.update({k: v for k, v in params.items() if v is not None})
+        for key, value in params.items():
+            # Listas (escolas) vão separadas por vírgula.
+            query[key] = ",".join(map(str, value)) if isinstance(value, list) else value
         response = await self._http.get(f"/module/Api/{controller}", params=query)
         response.raise_for_status()
         try:
@@ -190,7 +112,7 @@ class IEducarClient:
             "servidores-disciplinas-turmas",
             instituicao_id=self._instituicao_id,
             ano=ano,
-            escola=",".join(str(e) for e in escolas),
+            escola=escolas,
         )
         return [
             Vinculo(
@@ -211,7 +133,7 @@ class IEducarClient:
             "turmas-por-escola",
             instituicao_id=self._instituicao_id,
             ano=ano,
-            escola=",".join(str(e) for e in escolas),
+            escola=escolas,
         )
         return [
             Turma(
@@ -262,7 +184,7 @@ class IEducarClient:
             "Aluno",
             "todos-alunos",
             instituicao_id=self._instituicao_id,
-            escola=",".join(str(e) for e in escolas),
+            escola=escolas,
             ano=ano,
         )
         return [
@@ -281,7 +203,7 @@ class IEducarClient:
             "Matricula",
             "matriculas-escola",
             ano=ano,
-            escola=",".join(str(e) for e in escolas),
+            escola=escolas,
         )
         return [
             Matricula(
@@ -300,7 +222,7 @@ class IEducarClient:
             "Matricula",
             "movimentacao-enturmacao",
             ano=ano,
-            escola=",".join(str(e) for e in escolas),
+            escola=escolas,
         )
         return [
             Enturmacao(
@@ -318,7 +240,7 @@ class IEducarClient:
         data = await self._get(
             "Matricula",
             "dispensa-disciplina",
-            escola=",".join(str(e) for e in escolas),
+            escola=escolas,
         )
         return [
             Dispensa(

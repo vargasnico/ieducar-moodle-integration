@@ -2,11 +2,7 @@ from typing import Any
 
 import httpx
 
-
-class MoodleError(Exception):
-    def __init__(self, function: str, errorcode: str, message: str) -> None:
-        super().__init__(f"{function}: {message} ({errorcode})")
-        self.errorcode = errorcode
+from app.interfaces import MoodleError
 
 
 def _flatten(value: Any, prefix: str = "") -> dict[str, Any]:
@@ -24,7 +20,7 @@ def _flatten(value: Any, prefix: str = "") -> dict[str, Any]:
 
 
 class MoodleClient:
-    """Cliente dos Web Services REST do Moodle."""
+    """Implementa `Moodle` sobre os Web Services REST."""
 
     def __init__(self, http: httpx.AsyncClient, token: str) -> None:
         self._http = http
@@ -35,8 +31,8 @@ class MoodleClient:
             "wstoken": self._token,
             "wsfunction": function,
             "moodlewsrestformat": "json",
+            **_flatten(params),
         }
-        data.update(_flatten(params))
         response = await self._http.post("/webservice/rest/server.php", data=data)
         response.raise_for_status()
         try:
@@ -51,14 +47,20 @@ class MoodleClient:
             )
         return result
 
+    async def _call_sem_avisos(self, function: str, **params: Any) -> None:
+        # Nas funções de atualização, erros por item (id inválido, registro excluído...)
+        # não viram exceção no Moodle: voltam como warnings e o item fica como estava.
+        result = await self.call(function, **params)
+        warnings = result.get("warnings") if isinstance(result, dict) else None
+        if warnings:
+            raise MoodleError(
+                function,
+                str(warnings[0].get("warningcode", "")),
+                str(warnings[0].get("message", "")),
+            )
+
     async def get_site_info(self) -> dict[str, Any]:
         return await self.call("core_webservice_get_site_info")
-
-    async def get_user_by_field(self, field: str, value: str) -> dict[str, Any] | None:
-        users = await self.call(
-            "core_user_get_users_by_field", field=field, values=[value]
-        )
-        return users[0] if users else None
 
     async def get_users_by_field(
         self, field: str, values: list[str]
@@ -70,34 +72,12 @@ class MoodleClient:
             "core_user_get_users_by_field", field=field, values=values
         )
 
-    async def create_user(self, user: dict[str, Any]) -> int:
-        created = await self.call("core_user_create_users", users=[user])
-        return int(created[0]["id"])
-
     async def create_users(self, users: list[dict[str, Any]]) -> dict[str, int]:
-        """Cria em uma transação (um usuário inválido desfaz o lote); devolve username → id."""
         created = await self.call("core_user_create_users", users=users)
         return {str(u["username"]): int(u["id"]) for u in created}
 
     async def update_user(self, user: dict[str, Any]) -> None:
-        # Erros por usuário (id inválido, usuário excluído, e-mail duplicado...) não
-        # viram exceção no Moodle: voltam como warnings e o usuário fica sem alteração.
-        result = await self.call("core_user_update_users", users=[user])
-        warnings = result.get("warnings") if isinstance(result, dict) else None
-        if warnings:
-            raise MoodleError(
-                "core_user_update_users",
-                str(warnings[0].get("warningcode", "")),
-                str(warnings[0].get("message", "")),
-            )
-
-    async def assign_role(self, role_id: int, user_id: int, context_id: int) -> None:
-        await self.call(
-            "core_role_assign_roles",
-            assignments=[
-                {"roleid": role_id, "userid": user_id, "contextid": context_id}
-            ],
-        )
+        await self._call_sem_avisos("core_user_update_users", users=[user])
 
     async def get_category_by_idnumber(self, idnumber: str) -> dict[str, Any] | None:
         categories = await self.call(
@@ -132,31 +112,14 @@ class MoodleClient:
         courses = result.get("courses") if isinstance(result, dict) else None
         return courses or []
 
-    async def get_course_by_field(
-        self, field: str, value: str
-    ) -> dict[str, Any] | None:
-        courses = await self.get_courses_by_field(field, value)
-        return courses[0] if courses else None
-
     async def create_courses(self, courses: list[dict[str, Any]]) -> dict[str, int]:
-        """Cria em uma transação (um curso inválido desfaz o lote); devolve shortname → id."""
         created = await self.call("core_course_create_courses", courses=courses)
         return {str(c["shortname"]): int(c["id"]) for c in created}
 
     async def update_course(self, course: dict[str, Any]) -> None:
-        # Como em core_user_update_users, erros por curso voltam como warnings.
-        result = await self.call("core_course_update_courses", courses=[course])
-        warnings = result.get("warnings") if isinstance(result, dict) else None
-        if warnings:
-            raise MoodleError(
-                "core_course_update_courses",
-                str(warnings[0].get("warningcode", "")),
-                str(warnings[0].get("message", "")),
-            )
+        await self._call_sem_avisos("core_course_update_courses", courses=[course])
 
     async def enrol_users(self, role_id: int, pares: list[tuple[int, int]]) -> None:
-        """Inscrição manual de pares (course_id, user_id), em uma transação; reinscrever
-        quem já está inscrito não tem efeito."""
         await self.call(
             "enrol_manual_enrol_users",
             enrolments=[
@@ -166,7 +129,6 @@ class MoodleClient:
         )
 
     async def unenrol_users(self, pares: list[tuple[int, int]]) -> None:
-        """Remove inscrições manuais de pares (course_id, user_id), em uma transação."""
         await self.call(
             "enrol_manual_unenrol_users",
             enrolments=[

@@ -6,8 +6,8 @@ from typing import Any, Literal
 
 import httpx
 
-from app.clients.ieducar import IEducarClient, IEducarError
-from app.clients.moodle import MoodleClient, MoodleError
+from app.clients.ieducar import IEducarClient
+from app.clients.moodle import MoodleClient
 from app.config import (
     MoodleNotConfiguredError,
     MoodleSetup,
@@ -15,6 +15,7 @@ from app.config import (
     load_moodle_setup,
 )
 from app.db import Repository
+from app.interfaces import IEducarError, MoodleError
 from app.sync.alunos import AlunoSync
 from app.sync.base import Resultado, Sincronizacao
 from app.sync.professores import ProfessorSync

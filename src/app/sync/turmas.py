@@ -21,8 +21,8 @@ from typing import Any
 
 import httpx
 
-from app.clients.moodle import MoodleError
 from app.db import CursoMapping
+from app.interfaces import MoodleError
 from app.sync.base import Sincronizacao
 from app.sync.idempotencia import ConflitoError, enviar_em_lotes, localizar
 from app.sync.inscricoes import reconciliar_inscricoes

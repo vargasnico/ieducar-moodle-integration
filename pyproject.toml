@@ -1,7 +1,7 @@
 [project]
 name = "app"
 version = "0.1.0"
-description = "Add your description here"
+description = "Integração i-Educar → Moodle: professores, turmas, componentes curriculares e alunos"
 readme = "README.md"
 authors = [
     { name = "Francisco Rotilli", email = "francisco.r@edu.pucrs.br" },
@@ -12,8 +12,6 @@ dependencies = [
     "fastapi[standard]>=0.142.2",
     "httpx>=0.28.1",
     "pydantic-settings>=2.15.0",
-    "ruff>=0.16.10",
-    "ty>=0.0.84",
 ]
 
 [project.scripts]
@@ -22,3 +20,13 @@ app = "app:main"
 [build-system]
 requires = ["uv_build>=0.12.4,<0.13.0"]
 build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "ruff>=0.16.10",
+    "ty>=0.0.84",
+]
+
+[tool.pytest.ini_options]
+filterwarnings = ["ignore:Using `httpx` with `starlette.testclient`"]

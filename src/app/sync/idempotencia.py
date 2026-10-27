@@ -13,7 +13,7 @@ from typing import Any
 
 import httpx
 
-from app.clients.moodle import MoodleError
+from app.interfaces import MoodleError
 
 # Itens por chamada ao Moodle: valores demais passam do max_input_vars do PHP (1000)
 # e o excedente é descartado sem erro.

@@ -4,10 +4,10 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import ClassVar
 
-from app.clients.ieducar import ComponenteCurricular, IEducarClient
-from app.clients.moodle import MoodleClient
 from app.config import MoodleNotConfiguredError, MoodleSetup, Settings
 from app.db import Repository
+from app.domain import ComponenteCurricular
+from app.interfaces import IEducar, Moodle
 
 log = logging.getLogger(__name__)
 
@@ -38,8 +38,8 @@ class Sincronizacao(ABC):
 
     def __init__(
         self,
-        ieducar: IEducarClient,
-        moodle: MoodleClient,
+        ieducar: IEducar,
+        moodle: Moodle,
         repo: Repository,
         setup: MoodleSetup,
         settings: Settings,

@@ -10,10 +10,9 @@ import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from app.clients.ieducar import IEducarError
-from app.clients.moodle import MoodleError
 from app.config import MoodleNotConfiguredError, get_settings
 from app.db import Repository
+from app.interfaces import IEducarError, MoodleError
 from app.sync.service import Entidade, SyncAlreadyRunningError, SyncService
 from app.sync.usuarios import ALUNO, PROFESSOR
 
