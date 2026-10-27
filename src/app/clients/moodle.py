@@ -39,7 +39,12 @@ class MoodleClient:
         data.update(_flatten(params))
         response = await self._http.post("/webservice/rest/server.php", data=data)
         response.raise_for_status()
-        result = response.json()
+        try:
+            result = response.json()
+        except ValueError as exc:
+            raise MoodleError(
+                function, "invalidresponse", "resposta não é JSON"
+            ) from exc
         if isinstance(result, dict) and "exception" in result:
             raise MoodleError(
                 function, result.get("errorcode", ""), result.get("message", "")
@@ -60,7 +65,16 @@ class MoodleClient:
         return int(created[0]["id"])
 
     async def update_user(self, user: dict[str, Any]) -> None:
-        await self.call("core_user_update_users", users=[user])
+        # Erros por usuário (id inválido, usuário excluído, e-mail duplicado...) não
+        # viram exceção no Moodle: voltam como warnings e o usuário fica sem alteração.
+        result = await self.call("core_user_update_users", users=[user])
+        warnings = result.get("warnings") if isinstance(result, dict) else None
+        if warnings:
+            raise MoodleError(
+                "core_user_update_users",
+                str(warnings[0].get("warningcode", "")),
+                str(warnings[0].get("message", "")),
+            )
 
     async def assign_role(self, role_id: int, user_id: int, context_id: int) -> None:
         await self.call(

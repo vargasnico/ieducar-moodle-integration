@@ -74,9 +74,13 @@ async def health_dependencias(request: Request) -> dict[str, Any]:
     try:
         ieducar = sync.ieducar()
         escolas = [e for e in await ieducar.listar_escolas() if e.ativo]
-        anos = {
-            e.nome: await ieducar.ano_letivo_em_andamento(e.escola_id) for e in escolas
-        }
+        # Uma escola sem ano letivo não indica que a API esteja fora do ar.
+        anos: dict[str, Any] = {}
+        for e in escolas:
+            try:
+                anos[e.nome] = await ieducar.ano_letivo_em_andamento(e.escola_id)
+            except (IEducarError, httpx.HTTPStatusError) as exc:
+                anos[e.nome] = f"erro: {exc}"
         checks["ieducar"] = {
             "ok": True,
             "detalhe": "API acessível",
@@ -97,7 +101,8 @@ async def health_dependencias(request: Request) -> dict[str, Any]:
 
 @app.post("/sync/professores", tags=["sincronização"])
 async def sync_professores(request: Request, completo: bool = False) -> dict[str, Any]:
-    """Sincronização manual. Com `completo=true` ignora o cursor e reprocessa todos os servidores."""
+    """Sincronização manual. Com `completo=true` ignora o cursor e reenvia todos os
+    servidores ao Moodle, corrigindo alterações feitas direto no Moodle."""
     try:
         result = await _sync(request).sync_professores("manual", completo=completo)
     except SyncAlreadyRunningError as exc:

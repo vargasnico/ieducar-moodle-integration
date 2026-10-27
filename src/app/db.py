@@ -1,10 +1,12 @@
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+from app.clients.ieducar import Vinculo
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS professor_mapping (
@@ -134,18 +136,30 @@ class Repository:
                 (servidor_id, moodle_user_id, username, int(ativo), updated_at, now()),
             )
 
-    def save_vinculo(
-        self,
-        vinculo_id: int,
-        servidor_id: int,
-        turma_id: int,
-        ano: int,
-        componentes: tuple[int, ...],
-        ativo: bool,
-        updated_at: str,
-    ) -> None:
+    def delete_professor(self, servidor_id: int) -> None:
         with self._connect() as conn:
             conn.execute(
+                "DELETE FROM professor_mapping WHERE servidor_id = ?", (servidor_id,)
+            )
+
+    def list_professores_sem_turma(self, ano: int) -> list[int]:
+        """Servidores ativos no Moodle sem nenhum vínculo ativo no ano (devem ser suspensos)."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT m.servidor_id FROM professor_mapping m
+                WHERE m.ativo = 1 AND NOT EXISTS (
+                    SELECT 1 FROM professor_vinculo v
+                    WHERE v.servidor_id = m.servidor_id AND v.ano = ? AND v.ativo = 1
+                )
+                """,
+                (ano,),
+            ).fetchall()
+        return [int(r["servidor_id"]) for r in rows]
+
+    def save_vinculos(self, ano: int, vinculos: Iterable[Vinculo]) -> None:
+        with self._connect() as conn:
+            conn.executemany(
                 """
                 INSERT INTO professor_vinculo
                     (vinculo_id, servidor_id, turma_id, ano, componentes, ativo, updated_at)
@@ -159,13 +173,16 @@ class Repository:
                     updated_at = excluded.updated_at
                 """,
                 (
-                    vinculo_id,
-                    servidor_id,
-                    turma_id,
-                    ano,
-                    ",".join(str(c) for c in componentes),
-                    int(ativo),
-                    updated_at,
+                    (
+                        v.vinculo_id,
+                        v.servidor_id,
+                        v.turma_id,
+                        ano,
+                        ",".join(str(c) for c in v.componentes),
+                        int(v.ativo),
+                        v.updated_at,
+                    )
+                    for v in vinculos
                 ),
             )
 

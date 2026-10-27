@@ -15,6 +15,8 @@ Fluxo de uma execução:
        - não existe no Moodle e é professor  → core_user_create_users
        - existe e é professor                → atualiza nome/e-mail e reativa
        - existe e deixou de ser professor    → suspende
+     Afetados são os de vínculo ou cadastro alterado, os que falharam antes e os
+     ativos no Moodle sem turma no ano (troca de ano letivo, vínculo transferido).
   5. Registra o mapeamento i-Educar ↔ Moodle.
 """
 
@@ -28,12 +30,18 @@ import httpx
 
 from app.clients.ieducar import IEducarClient, IEducarError, Servidor
 from app.clients.moodle import MoodleClient, MoodleError
-from app.db import Repository
+from app.db import ProfessorMapping, Repository
 
 log = logging.getLogger(__name__)
 
 SERVIDORES_CURSOR = "servidores.cursor"
 PENDENTES_KEY = "professores.pendentes"
+# Avisos de core_user_update_users para um usuário que não existe mais no Moodle.
+USUARIO_REMOVIDO = {"invaliduserid", "usernotupdateddeleted"}
+
+
+class ConflitoError(Exception):
+    """O login do servidor já pertence a outro usuário do Moodle."""
 
 
 def vinculos_cursor_key(ano: int) -> str:
@@ -57,6 +65,12 @@ def split_name(nome: str) -> tuple[str, str]:
     if len(parts) == 1:
         return parts[0], parts[0]
     return parts[0], " ".join(parts[1:])
+
+
+def _inalterado(mapping: ProfessorMapping, servidor: Servidor, professor: bool) -> bool:
+    return (
+        mapping.ieducar_updated_at == servidor.updated_at and mapping.ativo == professor
+    )
 
 
 @dataclass
@@ -134,38 +148,42 @@ class ProfessorSync:
             result.escolas,
             modified=None if completo else self._since(vinculos_key),
         )
-        for v in vinculos:
-            self._repo.save_vinculo(
-                v.vinculo_id,
-                v.servidor_id,
-                v.turma_id,
-                ano,
-                v.componentes,
-                v.ativo,
-                v.updated_at,
-            )
+        self._repo.save_vinculos(ano, vinculos)
         result.vinculos_lidos = len(vinculos)
 
         servidores = await self._ieducar.listar_servidores(
             modified=None if completo else self._since(SERVIDORES_CURSOR)
         )
+        listados = {s.servidor_id: s for s in servidores}
 
-        # Servidores afetados: os de vínculos alterados, os de cadastro alterado e
-        # os que falharam na execução anterior.
+        # Servidores afetados: os de vínculos alterados, os de cadastro alterado, os
+        # que falharam na execução anterior e os ativos no Moodle sem turma no ano
+        # (troca de ano letivo, vínculo transferido para outro servidor...).
         pendentes = set(json.loads(self._repo.get_state(PENDENTES_KEY) or "[]"))
         candidatos = (
             {v.servidor_id for v in vinculos}
-            | {s.servidor_id for s in servidores}
+            | set(listados)
             | pendentes
+            | set(self._repo.list_professores_sem_turma(ano))
         )
+        if completo:
+            # Inclui quem já foi mapeado e não aparece mais na listagem do i-Educar.
+            candidatos |= {m.servidor_id for m in self._repo.list_professores()}
         falhas: set[int] = set()
         for servidor_id in sorted(candidatos):
             result.avaliados += 1
             try:
-                await self._sync_one(servidor_id, ano, result)
-            except (IEducarError, MoodleError, httpx.HTTPError) as exc:
+                await self._sync_one(
+                    servidor_id, ano, result, listados.get(servidor_id), completo
+                )
+            except (IEducarError, MoodleError, ConflitoError, httpx.HTTPError) as exc:
                 log.warning("Falha ao sincronizar servidor %s: %s", servidor_id, exc)
                 result.erros.append(f"servidor {servidor_id}: {exc}")
+                falhas.add(servidor_id)
+            except Exception as exc:
+                # Um registro inesperado não interrompe os demais nem descarta os pendentes.
+                log.exception("Erro inesperado ao sincronizar servidor %s", servidor_id)
+                result.erros.append(f"servidor {servidor_id}: {exc!r}")
                 falhas.add(servidor_id)
 
         # Os cursores sempre avançam; quem falhou fica em "pendentes" e é
@@ -179,62 +197,156 @@ class ProfessorSync:
         self._repo.set_state(PENDENTES_KEY, json.dumps(sorted(falhas)))
         return result
 
-    async def _sync_one(self, servidor_id: int, ano: int, result: SyncResult) -> None:
-        servidor = await self._ieducar.obter_servidor(servidor_id)
-        if servidor is None:
-            result.ignorados += 1
-            return
-        professor = (
-            servidor.ativo and self._repo.count_turmas_ativas(servidor_id, ano) > 0
-        )
-
+    async def _sync_one(
+        self,
+        servidor_id: int,
+        ano: int,
+        result: SyncResult,
+        listado: Servidor | None,
+        forcar: bool,
+    ) -> None:
+        """`listado` é o servidor vindo da listagem, se veio; `forcar` reenvia ao Moodle
+        mesmo sem alteração no i-Educar (corrige mudanças feitas direto no Moodle)."""
         mapping = self._repo.get_professor(servidor_id)
+        tem_turma = self._repo.count_turmas_ativas(servidor_id, ano) > 0
+        # A listagem já traz situação e updated_at: sem mudança, nem busca o servidor.
         if (
-            mapping
-            and mapping.ieducar_updated_at == servidor.updated_at
-            and mapping.ativo == professor
+            not forcar
+            and mapping
+            and listado
+            and _inalterado(mapping, listado, listado.ativo and tem_turma)
         ):
             result.inalterados += 1
             return
 
-        # "Já existe no Moodle?" — primeiro pelo mapeamento local; se ele foi perdido,
-        # pelo idnumber gravado no usuário do Moodle, evitando criar duplicados.
-        moodle_user_id = mapping.moodle_user_id if mapping else None
-        username = mapping.moodle_username if mapping else None
-        if moodle_user_id is None:
-            existing = await self._moodle.get_user_by_field(
-                "idnumber", idnumber_for(servidor_id)
-            )
-            if existing:
-                moodle_user_id = int(existing["id"])
-                username = str(existing["username"])
+        servidor = await self._ieducar.obter_servidor(servidor_id)
+        if servidor is None:
+            await self._suspender_removido(mapping, result)
+            return
+        professor = servidor.ativo and tem_turma
+        if not forcar and mapping and _inalterado(mapping, servidor, professor):
+            result.inalterados += 1
+            return
 
-        if moodle_user_id is None:
-            if not professor:
-                result.ignorados += 1
-                return
-            moodle_user_id, username = await self._create(servidor)
-            result.criados += 1
-        else:
-            await self._update(servidor, moodle_user_id, suspenso=not professor)
+        existente = await self._atualizar_existente(servidor, mapping, professor)
+        if existente:
+            moodle_user_id, username = existente
             if professor:
                 result.atualizados += 1
             else:
                 result.suspensos += 1
+        elif professor:
+            moodle_user_id, username = await self._create(servidor)
+            result.criados += 1
+        else:
+            if mapping:
+                self._repo.delete_professor(servidor_id)
+            result.ignorados += 1
+            return
 
         self._repo.save_professor(
-            servidor_id, moodle_user_id, username or "", professor, servidor.updated_at
+            servidor_id, moodle_user_id, username, professor, servidor.updated_at
         )
 
-    def _email(self, servidor: Servidor) -> str:
-        return (
-            servidor.email
-            or f"{idnumber_for(servidor.servidor_id)}@{self._email_domain}"
+    async def _suspender_removido(
+        self, mapping: ProfessorMapping | None, result: SyncResult
+    ) -> None:
+        """Servidor que não existe mais no i-Educar: suspende o usuário, se ainda ativo."""
+        if not (mapping and mapping.ativo):
+            result.ignorados += 1
+            return
+        try:
+            await self._moodle.update_user(
+                {"id": mapping.moodle_user_id, "suspended": True}
+            )
+        except MoodleError as exc:
+            if exc.errorcode not in USUARIO_REMOVIDO:
+                raise
+            self._repo.delete_professor(mapping.servidor_id)
+            result.ignorados += 1
+            return
+        self._repo.save_professor(
+            mapping.servidor_id,
+            mapping.moodle_user_id,
+            mapping.moodle_username,
+            False,
+            mapping.ieducar_updated_at,
         )
+        result.suspensos += 1
+        log.info(
+            "Servidor %s não existe mais no i-Educar; usuário %s suspenso",
+            mapping.servidor_id,
+            mapping.moodle_user_id,
+        )
+
+    async def _atualizar_existente(
+        self, servidor: Servidor, mapping: ProfessorMapping | None, professor: bool
+    ) -> tuple[int, str] | None:
+        """Atualiza o usuário do servidor no Moodle, se ele existir; devolve (id, username)."""
+        if mapping:
+            try:
+                await self._update(
+                    servidor, mapping.moodle_user_id, suspenso=not professor
+                )
+                return mapping.moodle_user_id, mapping.moodle_username
+            except MoodleError as exc:
+                if exc.errorcode not in USUARIO_REMOVIDO:
+                    raise
+                log.warning(
+                    "Usuário %s do Moodle (servidor %s) não existe mais; mapeamento descartado",
+                    mapping.moodle_user_id,
+                    servidor.servidor_id,
+                )
+        # Sem mapeamento válido, procura pelo idnumber gravado no usuário do Moodle,
+        # evitando criar duplicados. Ao excluir um usuário o Moodle limpa o idnumber.
+        existing = await self._moodle.get_user_by_field(
+            "idnumber", idnumber_for(servidor.servidor_id)
+        )
+        if not existing:
+            return None
+        user_id = int(existing["id"])
+        await self._update(servidor, user_id, suspenso=not professor)
+        return user_id, str(existing["username"])
+
+    async def _email(self, servidor: Servidor, user_id: int | None) -> str:
+        """E-mail do i-Educar; um provisório se não houver ou se já for de outro usuário."""
+        provisorio = f"{idnumber_for(servidor.servidor_id)}@{self._email_domain}"
+        if not servidor.email:
+            return provisorio
+        # Sem allowaccountssameemail o Moodle recusa e-mail repetido, e no update o
+        # usuário inteiro deixaria de ser atualizado.
+        dono = await self._moodle.get_user_by_field("email", servidor.email)
+        if dono and int(dono["id"]) != user_id:
+            log.warning(
+                "E-mail %s do servidor %s já pertence ao usuário %s do Moodle; usando %s",
+                servidor.email,
+                servidor.servidor_id,
+                dono["id"],
+                provisorio,
+            )
+            return provisorio
+        return servidor.email
 
     async def _create(self, servidor: Servidor) -> tuple[int, str]:
-        firstname, lastname = split_name(servidor.nome)
         username = username_for(servidor)
+        existing = await self._moodle.get_user_by_field("username", username)
+        if existing:
+            if existing.get("idnumber"):
+                raise ConflitoError(
+                    f"login {username} já pertence ao usuário {existing['id']} do Moodle"
+                    f" (idnumber {existing['idnumber']})"
+                )
+            # Conta criada à mão com o login do servidor: passa a ser mantida pela integração.
+            user_id = int(existing["id"])
+            await self._update(servidor, user_id, suspenso=False)
+            log.info(
+                "Servidor %s vinculado ao usuário %s já existente no Moodle",
+                servidor.servidor_id,
+                user_id,
+            )
+            return user_id, username
+
+        firstname, lastname = split_name(servidor.nome)
         user_id = await self._moodle.create_user(
             {
                 "username": username,
@@ -242,7 +354,7 @@ class ProfessorSync:
                 "createpassword": True,
                 "firstname": firstname,
                 "lastname": lastname,
-                "email": self._email(servidor),
+                "email": await self._email(servidor, None),
                 "idnumber": idnumber_for(servidor.servidor_id),
             }
         )
@@ -256,7 +368,8 @@ class ProfessorSync:
                 "id": user_id,
                 "firstname": firstname,
                 "lastname": lastname,
-                "email": self._email(servidor),
+                "email": await self._email(servidor, user_id),
+                "idnumber": idnumber_for(servidor.servidor_id),
                 "suspended": suspenso,
             }
         )

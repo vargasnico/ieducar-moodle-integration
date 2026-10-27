@@ -6,9 +6,9 @@ from datetime import timedelta
 
 import httpx
 
-from app.clients.ieducar import IEducarClient, IEducarError
-from app.clients.moodle import MoodleClient, MoodleError
-from app.config import MoodleNotConfiguredError, Settings, load_moodle_setup
+from app.clients.ieducar import IEducarClient
+from app.clients.moodle import MoodleClient
+from app.config import Settings, load_moodle_setup
 from app.db import Repository
 from app.sync.professores import ProfessorSync, SyncResult
 
@@ -69,13 +69,12 @@ class SyncService:
                     ),
                 )
                 result = await sync.run(completo=completo)
-            except (
-                MoodleNotConfiguredError,
-                IEducarError,
-                MoodleError,
-                httpx.HTTPError,
-            ) as exc:
-                self._repo.finish_run(run_id, "failed", str(exc))
+            except asyncio.CancelledError:
+                self._repo.finish_run(run_id, "cancelled", "Execução interrompida.")
+                raise
+            except Exception as exc:
+                # Qualquer erro fecha a execução; senão ela fica "running" para sempre.
+                self._repo.finish_run(run_id, "failed", str(exc) or repr(exc))
                 raise
             status = "partial" if result.erros else "success"
             self._repo.finish_run(

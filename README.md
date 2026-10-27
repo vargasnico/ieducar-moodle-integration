@@ -86,10 +86,16 @@ flowchart TD
 - **Leitura incremental:** a API do i-Educar aceita `modified`; a integração guarda um
   cursor por tipo de dado. Como o i-Educar grava datas ora em UTC (código legado), ora no
   fuso da aplicação (models Laravel), o cursor é recuado por `SYNC_CURSOR_OVERLAP_HOURS`.
-- **Remoções:** vínculo excluído no i-Educar (ou servidor desativado) suspende o usuário;
-  um novo vínculo o reativa. Usuários nunca são apagados.
+- **Remoções:** vínculo excluído no i-Educar (ou servidor desativado ou removido) suspende
+  o usuário; um novo vínculo o reativa. Usuários nunca são apagados. A cada execução, quem
+  está ativo no Moodle sem turma no ano letivo também é suspenso, o que cobre a troca de
+  ano letivo e vínculos transferidos para outro servidor.
+- **Contas existentes:** se já houver no Moodle um usuário sem `idnumber` com o login do
+  servidor, ele passa a ser mantido pela integração. Se o e-mail do servidor já pertencer
+  a outro usuário do Moodle, usa-se o e-mail provisório.
 - **Falhas:** um servidor que falha não interrompe os demais e é reavaliado na próxima
-  execução.
+  execução. `completo=true` reenvia todos os servidores ao Moodle, desfazendo alterações
+  feitas direto nele (e recriando usuários excluídos lá).
 
 **Decisões e limitações**
 - **Todo professor é `editingteacher`.** Nenhum endpoint do i-Educar expõe a função
@@ -191,7 +197,7 @@ Depois rode `POST /sync/professores?completo=true` (ou aguarde a sincronização
 |---|---|---|
 | `GET`  | `/health` | Aplicação no ar |
 | `GET`  | `/health/dependencias` | Autenticação no i-Educar e no Moodle; escolas ativas e ano letivo |
-| `POST` | `/sync/professores?completo=false` | Sincronização manual; `completo=true` ignora os cursores |
+| `POST` | `/sync/professores?completo=false` | Sincronização manual; `completo=true` ignora os cursores e reenvia todos ao Moodle |
 | `GET`  | `/sync/execucoes` | Histórico das execuções (manuais e agendadas) |
 | `GET`  | `/professores` | Mapeamento servidor do i-Educar ↔ usuário do Moodle |
 

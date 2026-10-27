@@ -58,7 +58,11 @@ class IEducarClient:
         query.update({k: v for k, v in params.items() if v is not None})
         response = await self._http.get(f"/module/Api/{controller}", params=query)
         response.raise_for_status()
-        data = response.json()
+        try:
+            data = response.json()
+        except ValueError as exc:
+            # Chave de acesso inválida, por exemplo, devolve a página HTML de login.
+            raise IEducarError(f"{controller}/{resource}: resposta não é JSON") from exc
         if data.get("any_error_msg"):
             msgs = "; ".join(m.get("msg", "") for m in data.get("msgs", []))
             raise IEducarError(f"{controller}/{resource}: {msgs}")
