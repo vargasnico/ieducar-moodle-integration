@@ -83,3 +83,64 @@ class MoodleClient:
                 {"roleid": role_id, "userid": user_id, "contextid": context_id}
             ],
         )
+
+    async def get_category_by_idnumber(self, idnumber: str) -> dict[str, Any] | None:
+        categories = await self.call(
+            "core_course_get_categories",
+            criteria=[{"key": "idnumber", "value": idnumber}],
+            addsubcategories=False,
+        )
+        return categories[0] if categories else None
+
+    async def create_category(
+        self, name: str, parent: int, idnumber: str, description: str = ""
+    ) -> int:
+        created = await self.call(
+            "core_course_create_categories",
+            categories=[
+                {
+                    "name": name,
+                    "parent": parent,
+                    "idnumber": idnumber,
+                    "description": description,
+                }
+            ],
+        )
+        return int(created[0]["id"])
+
+    async def get_course_by_field(
+        self, field: str, value: str
+    ) -> dict[str, Any] | None:
+        result = await self.call(
+            "core_course_get_courses_by_field", field=field, value=value
+        )
+        courses = result.get("courses") if isinstance(result, dict) else None
+        return courses[0] if courses else None
+
+    async def create_course(self, course: dict[str, Any]) -> int:
+        created = await self.call("core_course_create_courses", courses=[course])
+        return int(created[0]["id"])
+
+    async def update_course(self, course: dict[str, Any]) -> None:
+        # Como em core_user_update_users, erros por curso voltam como warnings.
+        result = await self.call("core_course_update_courses", courses=[course])
+        warnings = result.get("warnings") if isinstance(result, dict) else None
+        if warnings:
+            raise MoodleError(
+                "core_course_update_courses",
+                str(warnings[0].get("warningcode", "")),
+                str(warnings[0].get("message", "")),
+            )
+
+    async def enrol_user(self, role_id: int, user_id: int, course_id: int) -> None:
+        """Inscrição manual; reinscrever quem já está inscrito não tem efeito."""
+        await self.call(
+            "enrol_manual_enrol_users",
+            enrolments=[{"roleid": role_id, "userid": user_id, "courseid": course_id}],
+        )
+
+    async def unenrol_user(self, user_id: int, course_id: int) -> None:
+        await self.call(
+            "enrol_manual_unenrol_users",
+            enrolments=[{"userid": user_id, "courseid": course_id}],
+        )

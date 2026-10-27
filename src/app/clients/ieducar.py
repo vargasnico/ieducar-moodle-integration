@@ -37,6 +37,25 @@ class Vinculo:
     updated_at: str
 
 
+@dataclass(frozen=True)
+class Turma:
+    turma_id: int
+    nome: str
+    ano: int
+    escola_id: int
+    # Uma turma multisseriada tem mais de uma série.
+    series: tuple[int, ...]
+    ativo: bool
+    updated_at: str
+
+
+@dataclass(frozen=True)
+class ComponenteCurricular:
+    componente_id: int
+    nome: str
+    abreviatura: str
+
+
 def _ativo(value: Any) -> bool:
     return str(value).strip().lower() in {"1", "true", "t"}
 
@@ -146,4 +165,48 @@ class IEducarClient:
                 updated_at=str(v["updated_at"]),
             )
             for v in data.get("vinculos") or []
+        ]
+
+    async def listar_turmas(self, ano: int, escolas: list[int]) -> list[Turma]:
+        """Turmas do ano nas escolas, incluindo as desativadas (deleted_at)."""
+        data = await self._get(
+            "Turma",
+            "turmas-por-escola",
+            instituicao_id=self._instituicao_id,
+            ano=ano,
+            escola=",".join(str(e) for e in escolas),
+        )
+        return [
+            Turma(
+                turma_id=int(t["id"]),
+                nome=str(t["nome"]).strip(),
+                ano=int(t["ano"]),
+                escola_id=int(t["escola_id"]),
+                series=tuple(
+                    sorted({int(s["serie_id"]) for s in t.get("series_regras") or []})
+                ),
+                ativo=not t.get("deleted_at"),
+                updated_at=str(t["updated_at"]),
+            )
+            for t in data.get("turmas") or []
+        ]
+
+    async def listar_componentes(
+        self, escola_id: int, serie_id: int, ano: int
+    ) -> list[ComponenteCurricular]:
+        """Componentes curriculares que a escola oferece na série (Séries da escola)."""
+        data = await self._get(
+            "ComponenteCurricular",
+            "componentes-curriculares-escola-serie-ano",
+            escola_id=escola_id,
+            serie_id=serie_id,
+            ano=ano,
+        )
+        return [
+            ComponenteCurricular(
+                componente_id=int(c["id"]),
+                nome=str(c["nome"]).strip(),
+                abreviatura=str(c.get("abreviatura") or "").strip(),
+            )
+            for c in data.get("componentes_curriculares") or []
         ]

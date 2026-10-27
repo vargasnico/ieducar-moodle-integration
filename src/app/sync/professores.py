@@ -31,6 +31,7 @@ import httpx
 from app.clients.ieducar import IEducarClient, IEducarError, Servidor
 from app.clients.moodle import MoodleClient, MoodleError
 from app.db import ProfessorMapping, Repository
+from app.sync.contexto import resolver_contexto
 
 log = logging.getLogger(__name__)
 
@@ -114,32 +115,16 @@ class ProfessorSync:
         since = datetime.fromisoformat(cursor) - self._cursor_overlap
         return since.strftime("%Y-%m-%d %H:%M:%S")
 
-    async def _escolas(self) -> list[int]:
-        if self._escola_id is not None:
-            return [self._escola_id]
-        return [e.escola_id for e in await self._ieducar.listar_escolas() if e.ativo]
-
-    async def _ano(self, escolas: list[int]) -> int | None:
-        if self._ano_letivo is not None:
-            return self._ano_letivo
-        return await self._ieducar.ano_letivo_em_andamento(escolas[0])
-
     async def run(self, completo: bool = False) -> SyncResult:
         result = SyncResult()
-        result.escolas = await self._escolas()
-        if not result.escolas:
-            result.erros.append("Nenhuma escola ativa no i-Educar.")
+        contexto = await resolver_contexto(
+            self._ieducar, self._escola_id, self._ano_letivo
+        )
+        result.escolas, result.ano = contexto.escolas, contexto.ano
+        if contexto.erro or contexto.ano is None:
+            result.erros.append(contexto.erro or "Ano letivo não definido.")
             return result
-        if len(result.escolas) > 1 and self._ano_letivo is None:
-            log.warning(
-                "Mais de uma escola ativa (%s); usando o ano letivo da primeira. "
-                "Defina IEDUCAR_ANO_LETIVO para escolher.",
-                result.escolas,
-            )
-        result.ano = ano = await self._ano(result.escolas)
-        if ano is None:
-            result.erros.append("Nenhum ano letivo em andamento na escola.")
-            return result
+        ano = contexto.ano
 
         # Vínculos: atualizam a cópia local antes de qualquer decisão.
         vinculos_key = vinculos_cursor_key(ano)
