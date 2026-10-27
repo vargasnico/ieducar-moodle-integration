@@ -171,8 +171,8 @@ if ((DADOS_DEMO)); then
   else
     info "já existem escolas cadastradas; DemoSeeder não executado"
   fi
-  ieducar sh -c 'cat > /tmp/seed_professores.php' <scripts/ieducar_seed_professores.php
-  artisan tinker --execute="require '/tmp/seed_professores.php';"
+  ieducar sh -c 'cat > /tmp/seed.php' <scripts/ieducar_seed.php
+  artisan tinker --execute="require '/tmp/seed.php';"
 fi
 
 etapa "Subindo o restante (na primeira vez o Moodle leva alguns minutos para instalar)"
