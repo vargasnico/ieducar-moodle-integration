@@ -225,6 +225,10 @@ class AlunoSync:
                     a_criar.add(mapping.aluno_id)
             except (MoodleError, httpx.HTTPError) as exc:
                 self._erro(result, f"aluno {mapping.aluno_id}", exc)
+                # O usuário segue existindo: sem ele em `ativos` o aluno seria
+                # desinscrito de todos os cursos por causa de uma falha momentânea.
+                if deve_ativo:
+                    ativos[mapping.aluno_id] = mapping.moodle_user_id
 
         if a_criar:
             ativos.update(
@@ -242,8 +246,9 @@ class AlunoSync:
     ) -> bool:
         """Mantém o usuário de um aluno já mapeado; False se ele não existe mais no Moodle."""
         if aluno is None:
-            # Sem matrícula no ano: só suspende, se ainda estiver ativo.
-            if not mapping.ativo:
+            # Sem matrícula no ano: só suspende, se ainda estiver ativo. Com
+            # `completo` reenvia mesmo assim, para descobrir usuário excluído no Moodle.
+            if not mapping.ativo and not completo:
                 result.usuarios_inalterados += 1
                 return True
             dados: dict[str, Any] = {"suspended": True}
@@ -293,18 +298,19 @@ class AlunoSync:
         criados: dict[int, int] = {}
         pendentes = {a.aluno_id: a for a in alunos}
 
-        por_idnumber = {
-            str(u.get("idnumber")): u
+        # Em lotes: valores demais numa chamada passam do max_input_vars do PHP e o
+        # excedente é descartado sem erro.
+        por_idnumber: dict[str, dict[str, Any]] = {}
+        por_username: dict[str, dict[str, Any]] = {}
+        for lote in batched(sorted(pendentes), LOTE_USUARIOS):
             for u in await self._moodle.get_users_by_field(
-                "idnumber", [aluno_idnumber(i) for i in pendentes]
-            )
-        }
-        por_username = {
-            str(u.get("username")): u
+                "idnumber", [aluno_idnumber(i) for i in lote]
+            ):
+                por_idnumber[str(u.get("idnumber"))] = u
             for u in await self._moodle.get_users_by_field(
-                "username", [aluno_username(i) for i in pendentes]
-            )
-        }
+                "username", [aluno_username(i) for i in lote]
+            ):
+                por_username[str(u.get("username"))] = u
         for aluno_id, aluno in list(pendentes.items()):
             existente = por_idnumber.get(aluno_idnumber(aluno_id))
             if existente is None:
