@@ -88,10 +88,10 @@ if (!$category) {
 }
 
 // 3b. Sem mensagem de boas-vindas nas inscrições manuais. Desde o Moodle 4.4 ela vem
-//     ligada e é enviada a cada inscrito, com o professor do curso como remetente: a
-//     integração dispararia milhares de mensagens, e sem servidor de e-mail o envio
-//     falha e derruba a inscrição ("Message was not sent"). O padrão vale para cursos
-//     novos; os cursos da integração que já existem são corrigidos aqui.
+//     ligada e é enviada a cada inscrito, com o professor do curso como remetente. O
+//     noemailever acima só evita o e-mail: a notificação continua sendo gerada no
+//     Moodle, uma por aluno em cada curso, milhares numa sincronização. O padrão vale
+//     para cursos novos; os cursos da integração que já existem são corrigidos aqui.
 if (get_config('enrol_manual', 'sendcoursewelcomemessage')) {
     set_config('sendcoursewelcomemessage', 0, 'enrol_manual');
     info('Mensagem de boas-vindas da inscrição manual desligada por padrão');

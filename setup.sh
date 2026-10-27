@@ -208,6 +208,8 @@ cat <<EOF
     i-Educar           http://localhost:$(porta nginx 80)        admin / 123456789
     Moodle             http://localhost:$(porta moodle 8080)     admin / admin123
 
-    A integração sincroniza sozinha a cada 5 minutos; para forçar:
+    A integração sincroniza sozinha a cada 5 minutos; para forçar, nesta ordem:
       curl -X POST "http://localhost:$(porta integration 8000)/sync/professores?completo=true"
+      curl -X POST "http://localhost:$(porta integration 8000)/sync/turmas?completo=true"
+      curl -X POST "http://localhost:$(porta integration 8000)/sync/alunos?completo=true"
 EOF
