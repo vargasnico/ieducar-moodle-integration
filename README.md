@@ -36,7 +36,8 @@ Os serviços entram aqui como git submodules em `servicos/`, e tudo sobe com um 
 - [`docs/failure-scenarios.md`](docs/failure-scenarios.md): os quatro cenários de falha e como reproduzir.
 - ADRs: [decomposição](docs/adr/0001-decomposicao.md) · [comunicação](docs/adr/0002-comunicacao.md) ·
   [resiliência](docs/adr/0003-resiliencia.md) · [stack](docs/adr/0004-stack.md) ·
-  [repositórios e deploy](docs/adr/0005-repositorios-e-deploy.md).
+  [repositórios e deploy](docs/adr/0005-repositorios-e-deploy.md) ·
+  [arquitetura interna](docs/adr/0006-arquitetura-interna.md).
 
 ## Como executar
 
@@ -210,9 +211,9 @@ Uma mudança incompatível num formato vira uma versão nova da mensagem (`.v2`)
 docker-compose.yml       # ambiente completo
 setup.sh                 # sobe e prepara tudo
 servicos/                # os três serviços (submodules, um repositório cada)
-├── detector/            #   src/detector: ieducar.py (cliente) · deteccao.py (snapshot e eventos)
-├── sincronizador/       #   src/sincronizador: regras.py · sincronizacao.py (eventos → comandos)
-└── publicador/          #   src/publicador: moodle.py (cliente) · publicacao.py (procurar antes de criar)
+├── detector/            #   cada um em arquitetura hexagonal:
+├── sincronizador/       #   dominio/ · aplicacao/ · portas.py · adaptadores/ · main.py
+└── publicador/          #   (ADR 0006 e o README de cada serviço)
 infra/rabbitmq/          # exchange, filas, retry e DLQ, criados quando o RabbitMQ sobe
 docs/                    # architecture.md, failure-scenarios.md, adr/
 scripts/                 # dados de teste, verificar.sh, falhas/ (cenários)
@@ -220,9 +221,11 @@ moodle/                  # preparação do Moodle (serviço moodle-setup)
 i-educar/                # i-Educar (submodule)
 ```
 
-Dentro de cada serviço, `mensagem.py`, `broker.py`, `logs.py` e `api.py` são cópias do
-mesmo código de infraestrutura: formato das mensagens, RabbitMQ com retry e DLQ, logs
-JSON com correlation ID, e `/health` e `/metrics`.
+Dentro de cada serviço o código segue a arquitetura hexagonal: o domínio (regras
+puras) no centro, um caso de uso, portas (interfaces) e adaptadores para SQLite,
+RabbitMQ, HTTP e o sistema externo ([ADR 0006](docs/adr/0006-arquitetura-interna.md)).
+O código de infraestrutura comum (formato das mensagens, RabbitMQ com retry e DLQ,
+logs) é copiado em cada serviço.
 
 ## Solução de problemas
 

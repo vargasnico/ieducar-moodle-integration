@@ -4,7 +4,8 @@ A integração i-Educar → Moodle do T1, refeita como três serviços que se co
 mensagens no RabbitMQ. As decisões estão nas ADRs:
 [decomposição](adr/0001-decomposicao.md), [comunicação](adr/0002-comunicacao.md),
 [resiliência](adr/0003-resiliencia.md), [stack](adr/0004-stack.md) e
-[repositórios e deploy](adr/0005-repositorios-e-deploy.md). Os cenários de
+[repositórios e deploy](adr/0005-repositorios-e-deploy.md) e
+[arquitetura interna](adr/0006-arquitetura-interna.md). Os cenários de
 falha estão em [failure-scenarios.md](failure-scenarios.md).
 
 ## Visão geral
@@ -43,12 +44,28 @@ o i-Educar, o Moodle, a documentação e os cenários de falha
 ieducar-moodle-integration/        (orquestração)
 ├── docker-compose.yml             sobe tudo
 ├── infra/rabbitmq/                exchange, filas, retry e DLQ (carregados ao subir)
-├── servicos/detector/       ──▶   repositório ieducar-moodle-detector (submodule, v1.0.0)
-├── servicos/sincronizador/  ──▶   repositório ieducar-moodle-sincronizador (submodule, v1.1.0)
-├── servicos/publicador/     ──▶   repositório ieducar-moodle-publicador (submodule, v1.1.1)
+├── servicos/detector/       ──▶   repositório ieducar-moodle-detector (submodule, v1.2.0)
+├── servicos/sincronizador/  ──▶   repositório ieducar-moodle-sincronizador (submodule, v1.2.0)
+├── servicos/publicador/     ──▶   repositório ieducar-moodle-publicador (submodule, v1.2.0)
 ├── i-educar/, moodle/             sistemas integrados
 └── docs/, scripts/                arquitetura e cenários de falha
 ```
+
+## Dentro de cada serviço
+
+Os três seguem a mesma arquitetura hexagonal ([ADR 0006](adr/0006-arquitetura-interna.md)):
+
+```
+adaptador de entrada ──▶ caso de uso (aplicacao/) ──▶ domínio (dominio/, regras puras)
+(RabbitMQ, HTTP,               │ portas.py (interfaces)
+ agendador)                    └──▶ adaptadores de saída (SQLite, RabbitMQ, i-Educar, Moodle)
+```
+
+| Serviço | Caso de uso | Domínio |
+|---|---|---|
+| detector | `RodarCiclo` | `estado.py` (monta o estado de cada entidade), `mudancas.py` (compara com o snapshot) |
+| sincronizador | `TratarEvento` | `regras.py` (as regras do T1), `planejamento.py` (evento → comandos), `versao.py` |
+| publicador | `AplicarComando` | `decisao.py` (procurar antes de criar: atualizar, criar ou nada), `versao.py` |
 
 ## Uma sincronização
 
@@ -58,7 +75,7 @@ ieducar-moodle-integration/        (orquestração)
    sumiram. Depois grava o snapshot. Todas as mensagens do ciclo levam o mesmo
    `correlation_id`.
 2. **Sincronizador:** consome um evento por vez, aplica as regras
-   ([`regras.py`](../servicos/sincronizador/src/sincronizador/regras.py)) e publica comandos de estado
+   ([`regras.py`](../servicos/sincronizador/src/sincronizador/dominio/regras.py)) e publica comandos de estado
    desejado: o usuário, os cursos e as inscrições a adicionar e a remover.
 3. **Publicador:** consome até 10 comandos em paralelo. Para usuários e cursos,
    procura pelo `idnumber` e atualiza ou cria; para inscrições, busca os ids e
