@@ -102,7 +102,11 @@ Os cursos aparecem em http://localhost:8080 (`admin` / `admin123`), na categoria
 **6. Uma mudança incremental.** Altere algo no i-Educar (http://localhost, `admin` /
 `123456789`), por exemplo renomeie uma turma. No próximo ciclo (até 1 minuto, ou
 `curl -X POST localhost:8001/ciclos`) o detector publica só aquela turma e os cursos
-dela são renomeados no Moodle.
+dela são renomeados no Moodle. Sem usar a interface:
+
+```bash
+./scripts/alterar-ieducar.sh renomear-turma && curl -X POST localhost:8001/ciclos
+```
 
 **7. Métricas:** `curl localhost:8003/metrics | grep -E "mensagens_total|sincronizacao_segundos"`.
 
