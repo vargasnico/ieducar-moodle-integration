@@ -7,10 +7,10 @@
 	branch = 2.11
 [submodule "servicos/detector"]
 	path = servicos/detector
-	url = /home/francisco/Documents/PUCRS/S05/PROJARQ/ieducar-moodle-detector
+	url = ../ieducar-moodle-detector.git
 [submodule "servicos/sincronizador"]
 	path = servicos/sincronizador
-	url = /home/francisco/Documents/PUCRS/S05/PROJARQ/ieducar-moodle-sincronizador
+	url = ../ieducar-moodle-sincronizador.git
 [submodule "servicos/publicador"]
 	path = servicos/publicador
-	url = /home/francisco/Documents/PUCRS/S05/PROJARQ/ieducar-moodle-publicador
+	url = ../ieducar-moodle-publicador.git
