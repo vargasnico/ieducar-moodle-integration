@@ -82,7 +82,9 @@ servidores, 210 alunos), que viram ~2.170 comandos.
 
 `*.retry` não tem consumidor: a mensagem espera 10s (TTL) e volta para a fila
 principal. Depois de 5 falhas ela vai para `*.dlq`, e `POST /dlq/reprocessar` a
-devolve à fila. A topologia é criada quando o RabbitMQ sobe
+devolve à fila. Reprocessar é seguro: cada mensagem leva o início do ciclo que a
+gerou (`ciclo_iniciado_em`), e uma mensagem mais antiga que a última aplicada à mesma
+entidade é descartada ([ADR 0003](adr/0003-resiliencia.md), item 7). A topologia é criada quando o RabbitMQ sobe
 (`infra/rabbitmq/definitions.json`), e cada consumidor também declara a própria fila.
 Filas e mensagens são duráveis e sobrevivem a um reinício do
 RabbitMQ. Interface do RabbitMQ: http://localhost:15672 (`integracao` / `integracao`).
@@ -97,7 +99,7 @@ serviço):
 | `id` | UUID da mensagem |
 | `tipo`, `versao` | nome e versão; a routing key é `<tipo>.v<versao>` |
 | `correlation_id` | a sincronização (ciclo do detector) a que a mensagem pertence; passa do evento para os comandos |
-| `ciclo_iniciado_em` | quando o ciclo começou (usado na métrica de tempo de sincronização) |
+| `ciclo_iniciado_em` | quando o ciclo começou: é a **versão** da mensagem (a mais antiga que a última aplicada à entidade é descartada) e a base da métrica de tempo de sincronização |
 | `ocorrido_em` | quando a mensagem foi criada |
 | `dados` | conteúdo, conforme o tipo (tabelas abaixo) |
 
@@ -147,6 +149,9 @@ serviço):
   - `detector_ciclos_total{resultado}` e `detector_eventos_total{tipo}`: ciclos (com
     sucesso ou falha) e mudanças detectadas;
   - `detector_ciclo_segundos`: duração da leitura do i-Educar;
+  - `mensagens_obsoletas_total` (publicador) e `eventos_obsoletos_total`
+    (sincronizador): mensagens descartadas porque uma versão mais nova da mesma
+    entidade já tinha sido aplicada (ex.: reprocessadas da DLQ);
   - `sincronizacao_segundos{tipo}`: tempo do início do ciclo até o comando ser
     aplicado no Moodle.
 
@@ -172,8 +177,6 @@ As regras de negócio são as mesmas do T1 (README, "Regras da integração").
 
 - **Sem circuit breaker** (desejável no enunciado) e **sem tracing distribuído**; o
   correlation ID nos logs faz o papel do rastreamento.
-- **Ordem:** se uma mensagem passar pela fila de retry, uma versão mais nova da mesma
-  entidade pode ser aplicada antes dela. Um ciclo completo corrige.
 - **Uma instância por serviço** (SQLite).
 - Diferente do T1, as inscrições de cursos ocultos não são preservadas
   automaticamente: um aluno que sai da turma é desinscrito mesmo que o curso esteja

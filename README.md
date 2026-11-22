@@ -113,6 +113,7 @@ dela são renomeados no Moodle.
 ./scripts/falhas/cenario2-moodle-fora.sh 30      # Moodle fora por 30s (use 90 para ver a DLQ)
 ./scripts/falhas/cenario3-resposta-perdida.sh    # Moodle cria, mas a resposta não chega
 ./scripts/falhas/cenario4-reinicio.sh publicador # serviço morto no meio da sincronização
+./scripts/falhas/dlq-versao-antiga.sh            # DLQ reprocessada não desfaz alteração mais nova
 ```
 
 `PAUSAR=1` antes do comando faz o script esperar um Enter a cada passo. Explicações e

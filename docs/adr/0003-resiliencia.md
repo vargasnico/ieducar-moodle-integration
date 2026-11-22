@@ -34,6 +34,15 @@ Moodle cria mas a resposta se perde, e um serviço reinicia no meio.
    snapshot; o sincronizador publica os comandos e só depois grava o estado. Uma
    queda entre as duas coisas faz a mensagem ser publicada de novo no próximo ciclo
    ou na reentrega, o que é inofensivo pelo item 4. Nada se perde.
+7. **Versão por entidade.** Toda mensagem leva `ciclo_iniciado_em`, o início do
+   ciclo do detector que a originou, e um ciclo posterior sempre descreve um estado
+   mais novo. O sincronizador (por turma, servidor e aluno) e o publicador (por
+   usuário, curso e inscrição) guardam o ciclo da última mensagem aplicada a cada
+   entidade e **descartam** a de um ciclo anterior. Sem isso, reprocessar a DLQ podia
+   desfazer uma alteração mais nova: reativar um aluno já suspenso ou reinscrever um
+   aluno já dispensado (e essa reinscrição não seria corrigida depois, porque o
+   sincronizador não sabe dela). Mensagens de um mesmo ciclo (reentregas) continuam
+   sendo aplicadas, e o publicador trata uma entidade por vez.
 
 ## Alternativas
 
@@ -52,6 +61,7 @@ Moodle cria mas a resposta se perde, e um serviço reinicia no meio.
   para a DLQ; elas precisam ser reprocessadas à mão depois que ele volta.
 - Um erro permanente (ex.: login que já pertence a outra conta) também passa pelas 5
   tentativas antes de ir para a DLQ.
-- Limitação: duas versões da mesma entidade podem ser aplicadas fora de ordem se uma
-  delas passar pela fila de retry. Um ciclo completo (`POST /ciclos?completo=true`)
-  corrige.
+- Reprocessar a DLQ é sempre seguro: o que ainda vale é aplicado e o que ficou velho é
+  descartado (métricas `mensagens_obsoletas_total` e `eventos_obsoletos_total`). O
+  mesmo vale para mensagens que saem fora de ordem pela fila de retry.
+- A versão depende do relógio do detector, que é o único a gerá-la.

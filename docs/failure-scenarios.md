@@ -12,6 +12,7 @@ espera um Enter entre os passos, para apresentar.
 | 2 | Moodle fora do ar | Os comandos voltam pela fila de retry (10s) sem travar os outros; depois de 5 falhas vão para a DLQ, que é reprocessada | `cenario2-moodle-fora.sh [segundos]` |
 | 3 | O Moodle cria, mas a resposta não chega | O retry repete a operação inteira: procura pelo `idnumber`, acha o que foi criado e só atualiza | `cenario3-resposta-perdida.sh` |
 | 4 | Serviço reinicia no meio | Ack manual: o que não foi confirmado volta para a fila; tratar de novo não duplica | `cenario4-reinicio.sh [serviço]` |
+| + | DLQ reprocessada depois de uma alteração mais nova | A mensagem antiga é descartada (versão por entidade) e o Moodle fica com a mais nova | `dlq-versao-antiga.sh` |
 
 Saídas abaixo: execuções de 22/11/2026 com o seed do `setup.sh`.
 
@@ -135,3 +136,30 @@ mata o serviço com SIGKILL no meio, sobe de novo e confere o Moodle antes e dep
 ```
 
 O mesmo resultado matando o sincronizador.
+
+## Extra — Reprocessar a DLQ depois de uma alteração mais nova
+
+**O problema:** uma mensagem fica na DLQ (o Moodle estava fora) e, depois, uma
+alteração mais nova da mesma entidade passa normalmente. Se a DLQ for reprocessada,
+a mensagem antiga desfaria a mais nova: o curso voltaria ao nome antigo, um aluno
+suspenso seria reativado, um aluno dispensado seria reinscrito.
+
+**Resposta:** toda mensagem leva o início do ciclo do detector que a gerou
+(`ciclo_iniciado_em`), que funciona como versão. O publicador e o sincronizador
+guardam a versão da última mensagem aplicada a cada entidade e descartam a mais
+antiga ([ADR 0003](adr/0003-resiliencia.md), item 7).
+
+**Reproduzir:** `./scripts/falhas/dlq-versao-antiga.sh`. Com o Moodle fora, a turma é
+renomeada (versão A) e os comandos vão para a DLQ. O Moodle volta, a turma é
+renomeada de novo (versão B), e só então a DLQ é reprocessada.
+
+```
+==> 1. Moodle fora; turma renomeada (versão A); esperando os comandos irem para a DLQ
+    fila publicador.dlq: 9 mensagem(ns)
+==> 2. Moodle de volta; turma renomeada de novo (versão B), aplicada normalmente
+    Moodle agora: 1º ano (1º ano) Matutino (renomeada) – Ensino Religioso (2026)
+==> 3. Reprocessando a DLQ (versão A, mais antiga)
+{"reprocessadas":9}
+    "msg": "moodle.curso.sincronizar.v1 de curso:ieducar-turma-3-componente-14 descartado: já foi aplicada uma versão mais nova"
+    Moodle agora: 1º ano (1º ano) Matutino (renomeada) – Ensino Religioso (2026)   (continua a versão B)
+```
