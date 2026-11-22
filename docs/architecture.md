@@ -44,8 +44,8 @@ ieducar-moodle-integration/        (orquestração)
 ├── docker-compose.yml             sobe tudo
 ├── infra/rabbitmq/                exchange, filas, retry e DLQ (carregados ao subir)
 ├── servicos/detector/       ──▶   repositório ieducar-moodle-detector (submodule, v1.0.0)
-├── servicos/sincronizador/  ──▶   repositório ieducar-moodle-sincronizador (submodule, v1.0.0)
-├── servicos/publicador/     ──▶   repositório ieducar-moodle-publicador (submodule, v1.0.0)
+├── servicos/sincronizador/  ──▶   repositório ieducar-moodle-sincronizador (submodule, v1.1.0)
+├── servicos/publicador/     ──▶   repositório ieducar-moodle-publicador (submodule, v1.1.1)
 ├── i-educar/, moodle/             sistemas integrados
 └── docs/, scripts/                arquitetura e cenários de falha
 ```
