@@ -5,3 +5,12 @@
 	path = i-educar-reports
 	url = https://github.com/portabilis/i-educar-reports-package.git
 	branch = 2.11
+[submodule "servicos/detector"]
+	path = servicos/detector
+	url = /home/francisco/Documents/PUCRS/S05/PROJARQ/ieducar-moodle-detector
+[submodule "servicos/sincronizador"]
+	path = servicos/sincronizador
+	url = /home/francisco/Documents/PUCRS/S05/PROJARQ/ieducar-moodle-sincronizador
+[submodule "servicos/publicador"]
+	path = servicos/publicador
+	url = /home/francisco/Documents/PUCRS/S05/PROJARQ/ieducar-moodle-publicador

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Sobe e prepara todo o ambiente: i-Educar instalado (com dados de teste), Moodle
-# configurado e a integração já sincronizada. Pode ser executado de novo a qualquer
-# momento: cada passo confere o que já foi feito antes de agir.
+# configurado e os três serviços de integração rodando, já sincronizados. Pode ser
+# executado de novo a qualquer momento: cada passo confere o que já foi feito antes.
 #
 # Uso: ./setup.sh [--sem-dados]
 #   --sem-dados  não carrega escolas, turmas e professores de teste no i-Educar
@@ -34,10 +34,11 @@ ieducar() { docker compose exec -T php "$@"; }
 artisan() { ieducar php artisan "$@"; }
 sql() { docker compose exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d "${POSTGRES_DB:-$POSTGRES_USER}" -Atc "$0"' "$1"; }
 
-# Chama a API da integração de dentro do container (não depende de curl nem da porta
-# publicada). Imprime o JSON formatado; o código de saída é o status HTTP / 100.
+# Chama a API de um serviço de dentro do container dele (não depende de curl nem da
+# porta publicada). Uso: api <serviço> <método> <rota>. O código de saída é o status
+# HTTP / 100.
 api() {
-  docker compose exec -T integration python -c '
+  docker compose exec -T "$1" python -c '
 import json, sys, urllib.error, urllib.request
 req = urllib.request.Request("http://localhost:8000" + sys.argv[2], method=sys.argv[1])
 try:
@@ -47,7 +48,7 @@ except urllib.error.HTTPError as e:
     status, body = e.code, e.read()
 print(json.dumps(json.loads(body), indent=2, ensure_ascii=False))
 sys.exit(status // 100 if status >= 400 else 0)
-' "$1" "$2"
+' "$2" "$3"
 }
 
 # Altera (ou acrescenta) uma variável em i-educar/.env; marca se mudou de valor.
@@ -85,8 +86,9 @@ IFS=. read -r maior menor _ <<<"${versao#v}"
   falha "Docker Compose $versao é antigo; o projeto precisa da versão 2.20 ou mais nova."
 info "Docker Compose $versao"
 
-etapa "Submodules (i-Educar e Módulo de Relatórios)"
-if [[ -f i-educar/artisan && -f i-educar-reports/composer.json ]]; then
+etapa "Submodules (i-Educar, Módulo de Relatórios e os três serviços)"
+if [[ -f i-educar/artisan && -f i-educar-reports/composer.json && -f servicos/detector/Dockerfile &&
+  -f servicos/sincronizador/Dockerfile && -f servicos/publicador/Dockerfile ]]; then
   info "já baixados"
 else
   command -v git >/dev/null || falha "Git não encontrado: https://git-scm.com/"
@@ -176,40 +178,45 @@ if ((DADOS_DEMO)); then
 fi
 
 etapa "Subindo o restante (na primeira vez o Moodle leva alguns minutos para instalar)"
-docker compose build integration
+docker compose build detector sincronizador publicador
 docker compose up -d
-for _ in $(seq 30); do
-  api GET /health >/dev/null 2>&1 && break
-  sleep 2
+for servico in detector sincronizador publicador; do
+  for _ in $(seq 60); do
+    api "$servico" GET /health >/dev/null 2>&1 && break
+    sleep 2
+  done
+  api "$servico" GET /health >/dev/null 2>&1 || falha "o $servico não respondeu; veja: docker compose logs $servico"
+  info "$servico no ar"
 done
-api GET /health >/dev/null 2>&1 || falha "a integração não respondeu; veja: docker compose logs integration"
-
-etapa "Conferindo acesso da integração ao i-Educar e ao Moodle"
-api GET /health/dependencias || true
 
 if ((DADOS_DEMO)); then
-  # Em ordem de dependência: professores, depois turmas (cursos e inscrições de
-  # professores) e alunos (inscritos nos cursos criados pelas turmas).
-  # A sincronização agendada roda ao subir a integração; se ainda estiver em
-  # andamento a API responde 409 e tentamos de novo.
-  for entidade in professores turmas alunos; do
-    etapa "Primeira sincronização de $entidade"
-    for _ in $(seq 30); do
-      if resultado=$(api POST "/sync/$entidade?completo=true" 2>&1); then break; fi
-      sleep 5
-    done
-    printf '%s\n' "$resultado"
+  # Ciclo completo: reenvia ao Moodle todas as entidades, mudadas ou não. Se o ciclo
+  # agendado estiver rodando, a API responde 409 e tentamos de novo.
+  etapa "Primeira sincronização (ciclo completo)"
+  for _ in $(seq 30); do
+    if resultado=$(api detector POST "/ciclos?completo=true" 2>&1); then break; fi
+    sleep 2
   done
+  printf '%s\n' "$resultado"
+  info "aguardando o Moodle receber tudo (filas do RabbitMQ vazias)..."
+  for _ in $(seq 300); do
+    pendentes=$(docker compose exec -T rabbitmq rabbitmqctl -q list_queues name messages |
+      awk 'NR > 1 && $1 !~ /dlq$/ { s += $2 } END { print s + 0 }')
+    [[ $pendentes == 0 ]] && break
+    sleep 2
+  done
+  ./scripts/verificar.sh || true
 fi
 
 etapa "Pronto!"
 cat <<EOF
-    Integração (docs)  http://localhost:$(porta integration 8000)/docs
-    i-Educar           http://localhost:$(porta nginx 80)        admin / 123456789
-    Moodle             http://localhost:$(porta moodle 8080)     admin / admin123
+    i-Educar        http://localhost:$(porta nginx 80)        admin / 123456789
+    Moodle          http://localhost:$(porta moodle 8080)     admin / admin123
+    RabbitMQ        http://localhost:$(porta rabbitmq 15672)    integracao / integracao
+    Detector        http://localhost:$(porta detector 8000)/docs
+    Sincronizador   http://localhost:$(porta sincronizador 8000)/docs
+    Publicador      http://localhost:$(porta publicador 8000)/docs
 
-    A integração sincroniza sozinha a cada 5 minutos; para forçar, nesta ordem:
-      curl -X POST "http://localhost:$(porta integration 8000)/sync/professores?completo=true"
-      curl -X POST "http://localhost:$(porta integration 8000)/sync/turmas?completo=true"
-      curl -X POST "http://localhost:$(porta integration 8000)/sync/alunos?completo=true"
+    O detector procura mudanças no i-Educar a cada minuto; para forçar um ciclo:
+      curl -X POST "http://localhost:$(porta detector 8000)/ciclos"
 EOF

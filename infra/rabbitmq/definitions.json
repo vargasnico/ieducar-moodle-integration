@@ -1,0 +1,107 @@
+{
+  "users": [
+    {
+      "name": "integracao",
+      "password_hash": "CzM0QLTO7BNbpRKPaR25scg+OWVlVpcl/A21/8MEaNp6TIAs",
+      "hashing_algorithm": "rabbit_password_hashing_sha256",
+      "tags": [
+        "administrator"
+      ]
+    }
+  ],
+  "vhosts": [
+    {
+      "name": "/"
+    }
+  ],
+  "permissions": [
+    {
+      "user": "integracao",
+      "vhost": "/",
+      "configure": ".*",
+      "write": ".*",
+      "read": ".*"
+    }
+  ],
+  "exchanges": [
+    {
+      "name": "integracao",
+      "vhost": "/",
+      "type": "topic",
+      "durable": true,
+      "auto_delete": false,
+      "internal": false,
+      "arguments": {}
+    }
+  ],
+  "queues": [
+    {
+      "name": "sincronizador",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {}
+    },
+    {
+      "name": "sincronizador.retry",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-message-ttl": 10000,
+        "x-dead-letter-exchange": "",
+        "x-dead-letter-routing-key": "sincronizador"
+      }
+    },
+    {
+      "name": "sincronizador.dlq",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {}
+    },
+    {
+      "name": "publicador",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {}
+    },
+    {
+      "name": "publicador.retry",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-message-ttl": 10000,
+        "x-dead-letter-exchange": "",
+        "x-dead-letter-routing-key": "publicador"
+      }
+    },
+    {
+      "name": "publicador.dlq",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {}
+    }
+  ],
+  "bindings": [
+    {
+      "source": "integracao",
+      "vhost": "/",
+      "destination": "sincronizador",
+      "destination_type": "queue",
+      "routing_key": "ieducar.#",
+      "arguments": {}
+    },
+    {
+      "source": "integracao",
+      "vhost": "/",
+      "destination": "publicador",
+      "destination_type": "queue",
+      "routing_key": "moodle.#",
+      "arguments": {}
+    }
+  ]
+}

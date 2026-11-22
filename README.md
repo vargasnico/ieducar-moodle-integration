@@ -1,221 +1,47 @@
-# i-Educar ↔ Moodle Integration
+# i-Educar → Moodle em microsserviços (T2)
 
-Aplicação de integração em **FastAPI** entre dois monólitos educacionais de código aberto: o
-[i-Educar](https://github.com/portabilis/i-educar) (gestão escolar, fonte da verdade) e o
-[Moodle](https://moodle.org/) (ambiente virtual de aprendizagem).
+Integração entre o [i-Educar](https://github.com/portabilis/i-educar) (gestão escolar,
+fonte da verdade) e o [Moodle](https://moodle.org/) (ambiente virtual de aprendizagem).
+No T1 ela era um monólito; no T2 são **três serviços que se comunicam por mensagens
+no RabbitMQ**.
 
-Todo o ambiente sobe com um único `docker compose`: i-Educar, Moodle, a aplicação de
-integração e as dependências de cada um, conectados na mesma rede.
-
-## Arquitetura
-
-```mermaid
-flowchart LR
-    subgraph integration["Aplicação de integração"]
-        app["FastAPI + SQLite<br/>:8000"]
-    end
-
-    subgraph ieducar["i-Educar (submodules)"]
-        nginx["nginx<br/>:80"] --> fpm["PHP-FPM<br/>+ Módulo de Relatórios"]
-        fpm --> pg[("PostgreSQL")]
-        fpm --> redis[("Redis")]
-        horizon["Horizon<br/>(filas)"] --> redis
-    end
-
-    subgraph moodle["Moodle"]
-        md["Moodle 5.0<br/>:8080"] --> maria[("MariaDB")]
-        setup["moodle-setup<br/>(roda uma vez)"] -.-> md
-    end
-
-    app -- "API legada<br/>http://nginx" --> nginx
-    app -- "Web Services REST<br/>http://moodle:8080" --> md
-    setup -. "token<br/>/shared/moodle.json" .-> app
+```
+           ┌──────────┐   eventos    ┌───────────────┐   comandos   ┌────────────┐
+i-Educar ─▶│ detector │─────────────▶│ sincronizador │─────────────▶│ publicador │─▶ Moodle
+           └──────────┘  (RabbitMQ)  └───────────────┘  (RabbitMQ)  └────────────┘
+           o que mudou?                    regras                  escreve sem duplicar
 ```
 
-| Serviço        | Imagem / origem                                                         | Porta no host   |
-|----------------|-------------------------------------------------------------------------|-----------------|
-| `integration`  | `Dockerfile` deste repositório (Python 3.14)                            | `8000`          |
-| i-Educar       | submodule `i-educar` (tag `2.11.0`) + Módulo de Relatórios (submodule `i-educar-reports`, branch `2.11`) | `80` / `443` |
-| `moodle`       | `bitnamilegacy/moodle:5.0.2`                                            | `8080` / `8443` |
-| `moodle-setup` | mesma imagem do Moodle; executa `moodle/setup_webservice.php` e termina | —               |
-| `moodle-mariadb` | `bitnamilegacy/mariadb:11.8.3`                                        | —               |
-| PostgreSQL / Redis | definidos pelo compose do i-Educar                                  | `5432` / `6379` |
-
-O `moodle-setup` prepara o Moodle a cada `up` (idempotente): habilita os Web Services REST,
-cria o serviço externo "iEducar Integration" com as funções usadas, a categoria `iEducar` e
-o token, e grava token e IDs em `/shared/moodle.json`, de onde a aplicação os lê.
-
-### Organização da aplicação
-
-A integração é um monólito: um único processo FastAPI reúne a comunicação com os dois
-sistemas, as regras de sincronização e o banco local (SQLite). Dentro dele as
-responsabilidades ficam em camadas, e cada uma só depende das de baixo:
-
-| Camada | Módulos | Responsabilidade |
+| Serviço | O que faz | Dados próprios |
 |---|---|---|
-| API e agendamento | `main.py`, `sync/service.py` | Rotas, tratamento de erros HTTP, trava (uma sincronização por vez), histórico e execução periódica |
-| Casos de integração | `sync/professores.py`, `sync/turmas.py`, `sync/alunos.py` | Regra de cada caso: quem deve existir no Moodle e com quais inscrições |
-| Regras compartilhadas | `sync/base.py`, `sync/usuarios.py`, `sync/inscricoes.py`, `sync/idempotencia.py` | Escola e ano letivo, ciclo de vida dos usuários, diferença de inscrições, prevenção de duplicados e lotes |
-| Interfaces e domínio | `interfaces.py`, `domain.py` | Protocolos `IEducar` e `Moodle` e os dados do i-Educar |
-| Infraestrutura | `clients/ieducar.py`, `clients/moodle.py`, `db.py` | Clientes HTTP que implementam as interfaces e o repositório SQLite |
+| **detector** (`:8001`) | A cada 60s lê o i-Educar e publica um evento para cada servidor, turma ou aluno que mudou | snapshot (hash do último estado publicado) |
+| **sincronizador** (`:8002`) | Aplica as regras do T1 e publica os comandos para o Moodle | turmas e inscrições já pedidas |
+| **publicador** (`:8003`) | Aplica os comandos no Moodle, procurando antes de criar | mapeamento idnumber → id do Moodle |
 
-Os casos dependem das interfaces, não dos clientes HTTP; por isso os testes trocam os
-clientes por versões em memória. Um caso novo é uma subclasse de `Sincronizacao` e uma
-entrada em `SINCRONIZACOES` (`sync/service.py`): a rota `POST /sync/{entidade}`, o
-agendamento e o histórico passam a valer para ele sem outra alteração.
+Cada serviço tem **repositório, testes, Dockerfile, versão e CI próprios**, além do
+seu SQLite (nenhum acessa o banco de outro):
 
-## Regras da integração
+| Repositório | Papel |
+|---|---|
+| [`ieducar-moodle-detector`](servicos/detector) | serviço detector |
+| [`ieducar-moodle-sincronizador`](servicos/sincronizador) | serviço sincronizador |
+| [`ieducar-moodle-publicador`](servicos/publicador) | serviço publicador |
+| `ieducar-moodle-integration` (este) | orquestração: `docker-compose.yml`, topologia do RabbitMQ, i-Educar, Moodle, documentação e cenários de falha |
 
-| i-Educar | Moodle | Situação |
-|---|---|---|
-| Servidor ativo com vínculo ativo com turma no ano letivo | **Usuário** (`idnumber` `ieducar-servidor-<id>`) | ✅ caso 1 |
-| Turma × componente curricular | Um **curso** (`idnumber` `ieducar-turma-<turma>-componente-<componente>`) | ✅ caso 2 |
-| Vínculo professor ↔ turma e componentes | Inscrição como `editingteacher` nos cursos dos componentes | ✅ caso 2 |
-| Aluno enturmado (exceto componentes de que está dispensado) | **Usuário** (`idnumber` `ieducar-aluno-<código>`) inscrito como `student` nos cursos da turma | ✅ caso 3 |
+Os serviços entram aqui como git submodules em `servicos/`, e tudo sobe com um único
+`docker compose up`: os três serviços, o RabbitMQ, o i-Educar e o Moodle.
 
-Os cursos ficam em categorias por ano letivo (`iEducar › 2026`). O papel de professor é
-atribuído **no curso**, nunca na categoria inteira; por isso o caso 1 só cria e mantém o
-usuário, e o caso 2 faz as inscrições.
-
-### Caso 1 — professores (implementado)
-
-Professor é o **servidor ativo com pelo menos um vínculo ativo com turma** no ano letivo em
-andamento da escola. Servidores sem turma (secretaria, direção etc.) não vão para o Moodle.
-
-```mermaid
-flowchart TD
-    A([Sincronização periódica ou POST /sync/professores]) --> B["Escola ativa e ano letivo em andamento<br/>info-escolas · escola-ano-letivo"]
-    B --> C["Vínculos do ano<br/>servidores-disciplinas-turmas"]
-    B --> E["Servidores da instituição<br/>servidores"]
-    C --> F{"Para cada servidor com turma ou já mapeado:<br/>ativo e com turma?"}
-    E --> F
-    F --> G{"Já existe no Moodle?<br/>mapeamento local ou idnumber"}
-    G -- "não, é professor" --> H["core_user_create_users"]
-    G -- "não, não é professor" --> I["ignora"]
-    G -- "sim, é professor" --> J["core_user_update_users<br/>nome, e-mail, reativa"]
-    G -- "sim, deixou de ser" --> K["core_user_update_users<br/>suspended = 1"]
-    H --> L[("Mapeamento i-Educar ↔ Moodle")]
-    J --> L
-    K --> L
-```
-
-- **Identidade:** o vínculo com o i-Educar fica no `idnumber` do usuário do Moodle e não
-  depende de CPF ou e-mail. O login é o CPF (só números) ou `servidor<id>` sem CPF.
-- **Incremental na escrita:** cada execução lê todos os vínculos do ano e todos os
-  servidores (duas chamadas), mas só envia ao Moodle quem mudou desde a última execução
-  (`updated_at` ou situação diferentes do mapeamento). Os três casos seguem a mesma regra.
-  A API aceita `modified` para leitura incremental, mas o i-Educar grava datas ora em UTC,
-  ora no fuso da aplicação, e um cursor exigiria margem de releitura e uma lista de
-  pendentes para não perder alterações; ler tudo é simples e barato no volume de uma rede.
-- **Remoções:** vínculo excluído no i-Educar (ou servidor desativado ou removido) suspende
-  o usuário; um novo vínculo o reativa. Usuários nunca são apagados. Quem está ativo no
-  Moodle sem turma no ano letivo também é suspenso, o que cobre a troca de ano letivo e
-  vínculos transferidos para outro servidor.
-- **Contas existentes:** se já houver no Moodle um usuário sem `idnumber` com o login do
-  servidor, ele passa a ser mantido pela integração. Se o login já pertencer a um usuário
-  com outro `idnumber`, o servidor fica com erro e o usuário não é alterado. O e-mail pode
-  se repetir entre usuários (`allowaccountssameemail`, ligado pelo `moodle-setup`); sem
-  e-mail no i-Educar, usa-se `ieducar-servidor-<id>@sem-email.invalid`.
-- **Falhas:** um servidor que falha não interrompe os demais e, como o mapeamento não é
-  atualizado, é reenviado na próxima execução. `completo=true` reenvia todos os servidores ao Moodle, desfazendo alterações
-  feitas direto nele (e recriando usuários excluídos lá).
-
-**Decisões e limitações**
-- **Todo professor é `editingteacher`.** Nenhum endpoint do i-Educar expõe a função
-  exercida na turma (docente, auxiliar…), então não há como distinguir `editingteacher` de
-  `teacher`; todos os vinculados entram como `editingteacher`.
-- **Vínculos sem componentes curriculares ficam fora do escopo.** A API de vínculos só
-  devolve vínculos com componentes (o SQL faz `INNER JOIN` com os componentes da série).
-  Para a função *Docente* a tela do i-Educar exige componentes — inclusive no professor
-  unidocente, que marca todos —, mas funções como *Intérprete de LIBRAS* podem não ter;
-  esses vínculos não são vistos pela integração e foram deixados de fora.
-- O usuário é criado com `createpassword`, mas não há servidor de e-mail configurado: a
-  senha precisa ser redefinida pelo administrador do Moodle.
-
-### Caso 2 — turmas e componentes curriculares (implementado)
-
-No i-Educar uma turma reúne alunos, professores e vários componentes curriculares; no
-Moodle cada par **turma × componente** vira um curso. Exemplo: a turma "1º ano A" com
-Português, Matemática e Ciências vira três cursos, cada um com o seu professor.
-
-```mermaid
-flowchart TD
-    A([Sincronização periódica ou POST /sync/turmas]) --> B["Escola ativa e ano letivo em andamento"]
-    B --> C["Categoria do ano<br/>iEducar › 2026"]
-    B --> D["Todas as turmas do ano<br/>turmas-por-escola"]
-    D --> E["Componentes da série na escola<br/>componentes-curriculares-escola-serie-ano"]
-    E --> F{"Turma ativa?"}
-    F -- "sim" --> G["Um curso por componente<br/>cria ou atualiza o nome · visível"]
-    F -- "não" --> H["Oculta os cursos da turma<br/>inscrições mantidas"]
-    G --> I[("Mapeamento turma × componente ↔ curso")]
-    H --> I
-    I --> J["Professores: vínculos ativos do caso 1<br/>× cursos visíveis"]
-    J --> K["enrol_manual_enrol_users<br/>editingteacher"]
-    J --> L["enrol_manual_unenrol_users<br/>vínculo removido"]
-```
-
-- **Quando o curso é criado:** para todo componente que a escola oferece na série da turma
-  (Séries da escola), mesmo sem professor vinculado. Turmas multisseriadas reúnem os
-  componentes de todas as suas séries.
-- **Identificação:** `idnumber` `ieducar-turma-<turma>-componente-<componente>`, nome curto
-  `<ano>-T<turma>-C<componente>` e nome completo `<turma> – <componente> (<ano>)`.
-- **Estado desejado:** cada execução lê todas as turmas do ano (uma chamada, mais uma por
-  série) e só envia ao Moodle o que difere do que a integração já criou.
-- **Turma desativada, componente retirado da série ou troca de ano letivo:** o curso é
-  ocultado (`visible = 0`) e suas inscrições não são alteradas, para preservar o
-  histórico. Reativar a turma volta a exibir o curso.
-- **Professores:** inscritos como `editingteacher` nos cursos dos componentes dos seus
-  vínculos ativos e desinscritos quando o vínculo sai. Usa os usuários mantidos pelo caso 1,
-  por isso a sincronização periódica roda professores antes de turmas. Só as inscrições feitas pela integração são desfeitas; as criadas à mão no
-  Moodle não são tocadas. Componentes de vínculos sem curso (por exemplo, componentes
-  diferenciados da turma) aparecem em `componentes_sem_curso` e no log.
-- **Limitação:** componentes definidos só para uma turma específica ("componentes
-  curriculares diferenciados" no cadastro da turma) não são considerados; os cursos seguem
-  os componentes da série na escola.
-
-### Caso 3 — alunos (implementado)
-
-Aluno no Moodle é o **aluno ativo com enturmação ativa** no ano letivo: matrícula ativa e
-enturmação sem exclusão e sem data de saída. Ele é inscrito como `student` em todos os
-cursos da sua turma, exceto nos componentes de que tem dispensa.
-
-```mermaid
-flowchart TD
-    A([Sincronização periódica ou POST /sync/alunos]) --> B["Escola ativa e ano letivo em andamento"]
-    B --> C["Alunos · matrículas · enturmações · dispensas<br/>todos-alunos · matriculas-escola<br/>movimentacao-enturmacao · dispensa-disciplina"]
-    C --> D{"Enturmação ativa?<br/>sem exclusão nem data de saída"}
-    D -- "sim" --> E["Componentes da série do aluno na escola<br/>menos os de dispensa ativa"]
-    D -- "não" --> F["Sem turma no ano"]
-    E --> G["Usuário aluno&lt;código&gt;<br/>cria ou atualiza · reativa"]
-    F --> H["Suspende o usuário, se existir"]
-    G --> I["Cursos visíveis da turma (caso 2)"]
-    I --> J["enrol_manual_enrol_users<br/>student"]
-    I --> K["enrol_manual_unenrol_users<br/>saiu da turma ou foi dispensado"]
-```
-
-- **Identidade e login:** `idnumber` `ieducar-aluno-<código>` e login `aluno<código>`, pelo
-  código do aluno no i-Educar, que nunca muda. A matrícula não serve: é renovada a cada
-  ano. O nome exibido é o **nome social**, quando houver.
-- **E-mail:** a API do i-Educar não expõe o e-mail do aluno; todos usam o provisório
-  `ieducar-aluno-<código>@sem-email.invalid`.
-- **Saídas:** transferência, remanejamento, abandono e falecimento mantêm a enturmação no
-  diário do i-Educar (sem `deleted_at`), mas preenchem a data de saída: o aluno é
-  desinscrito dos cursos da turma. No remanejamento ele entra nos cursos da turma nova. Sem
-  nenhuma turma no ano, o usuário é suspenso; voltando, é reativado.
-- **Dispensas:** qualquer dispensa ativa num componente, mesmo que só de algumas etapas,
-  tira o aluno do curso desse componente. Excluir a dispensa o inscreve de novo.
-- **Turmas multisseriadas:** o aluno só entra nos cursos dos componentes da sua série.
-- **Estado desejado:** como no caso 2, cada execução lê tudo do ano e só envia ao Moodle o
-  que mudou; usuários e inscrições vão em lotes. Cursos ocultos não têm as inscrições
-  alteradas. A sincronização periódica roda professores, turmas e alunos, nessa ordem.
-
-## Pré-requisitos
-
-- [Docker](https://docs.docker.com/get-docker/) com Docker Compose v2.20+ (usa `include`)
-- [Git](https://git-scm.com/)
-- [uv](https://docs.astral.sh/uv/) (apenas para desenvolver a aplicação fora do container)
+**Documentação:**
+- [`docs/architecture.md`](docs/architecture.md): arquitetura, catálogo de eventos e comparação com o T1.
+- [`docs/failure-scenarios.md`](docs/failure-scenarios.md): os quatro cenários de falha e como reproduzir.
+- ADRs: [decomposição](docs/adr/0001-decomposicao.md) · [comunicação](docs/adr/0002-comunicacao.md) ·
+  [resiliência](docs/adr/0003-resiliencia.md) · [stack](docs/adr/0004-stack.md) ·
+  [repositórios e deploy](docs/adr/0005-repositorios-e-deploy.md).
 
 ## Como executar
+
+Pré-requisitos: [Docker](https://docs.docker.com/get-docker/) com Compose v2.20+ e
+[Git](https://git-scm.com/). No Windows, rode no Git Bash.
 
 ```bash
 git clone --recurse-submodules https://github.com/vargasnico/ieducar-moodle-integration.git
@@ -223,212 +49,186 @@ cd ieducar-moodle-integration
 ./setup.sh
 ```
 
-O [`setup.sh`](setup.sh) sobe os containers, instala o i-Educar, carrega os dados de teste,
-configura o Moodle e roda a primeira sincronização; ao final mostra os endereços e as senhas.
-A primeira execução leva uns 5–15 minutos, conforme a máquina e a rede (dependências do
-i-Educar e instalação do Moodle). Ele pode ser executado de novo a qualquer momento: cada passo confere o que já foi
-feito, e uma nova execução leva cerca de 1 minuto.
+O `--recurse-submodules` baixa também os três serviços (e o i-Educar). Se clonou sem
+ele: `git submodule update --init`.
 
-- **Windows:** rode no **Git Bash** (vem com o Git), com o Docker Desktop aberto.
-- **Sem dados de teste:** `./setup.sh --sem-dados`.
+O [`setup.sh`](setup.sh) sobe os containers, instala o i-Educar com dados de teste,
+configura o Moodle e roda a primeira sincronização. A primeira vez leva 5–15 minutos;
+as seguintes, cerca de 1 minuto. Com o i-Educar já instalado, basta
+`docker compose up -d --build`.
 
-### Passo a passo manual
+## Roteiro: uma sincronização completa
 
-O que o `setup.sh` faz, para quem quiser rodar cada comando:
+**1. Os serviços estão no ar?**
 
 ```bash
-git submodule update --init                  # se clonou sem --recurse-submodules
-cp i-educar/.env.example i-educar/.env
-# Só no Linux: HOST_UID/HOST_GID em i-educar/.env iguais a `id -u` / `id -g`.
-docker compose up -d php postgres redis moodle
-
-docker compose exec -u root php sh -c "chown \$(stat -c %u:%g .) packages packages/portabilis; find bootstrap/cache storage -type d -exec chmod 777 {} +"
-docker compose exec php composer config --global preferred-install.cossou/jasperphp source
-docker compose exec php composer new-install
-docker compose exec php php artisan db:seed
-docker compose exec php php artisan community:reports:install
-docker compose exec php php artisan vendor:publish --tag=reports-assets --ansi
-
-# Dados de teste
-docker compose exec php php artisan db:seed --class=DemoSeeder
-docker compose exec -T php sh -c "cat > /tmp/seed.php" < scripts/ieducar_seed.php
-docker compose exec php php artisan tinker --execute="require '/tmp/seed.php';"
-
-docker compose up -d --build
+curl localhost:8001/health; curl localhost:8002/health; curl localhost:8003/health
 ```
 
-> - O `HOST_UID`/`HOST_GID` fazem o usuário do container PHP ser o dono dos arquivos do
->   submodule montado; sem isso, no Linux, o `composer` não consegue criar `vendor/`.
-> - O `chown` corrige `packages/`, que o Docker cria como root ao montar o Módulo de
->   Relatórios; o `chmod` evita erros de permissão em volumes montados no Windows.
-> - O `composer config` faz a dependência do Módulo de Relatórios (`cossou/jasperphp`, que traz
->   o JasperStarter) ser instalada via `git clone`. Instalada pelo `.zip`, a extração falha no
->   Windows com `Could not delete .../JasperStarter/lib`.
-> - O `new-install` já ativa o Módulo de Relatórios (via `composer plug-and-play`), pois o
->   submodule `i-educar-reports` é montado em `i-educar/packages/portabilis/` pelo
->   `ieducar.override.yml`. Os dois comandos seguintes instalam os menus e os arquivos dele.
->   Sem o módulo, o cadastro de turmas do i-Educar quebra
->   (`Class "Portabilis_Model_Report_TipoBoletim" not found`).
-> - A primeira inicialização do Moodle leva alguns minutos (`docker compose logs -f moodle`);
->   a integração só sobe depois que o `moodle-setup` termina.
+**2. Disparar um ciclo completo.** O parâmetro `completo=true` faz o detector reenviar
+todas as entidades; sem ele, só o que mudou. A resposta traz o `correlation_id`:
 
-### Dados de teste
+```bash
+curl -X POST "localhost:8001/ciclos?completo=true"
+```
 
-O `DemoSeeder` do i-Educar cria escolas, cursos, séries, turmas e alunos com pai e mãe, mas
-grava só um primeiro nome por pessoa (que se repete: vários "Franco", por exemplo), pai e mãe
-de sexo aleatório, e-mails aleatórios em domínios reais e parte das pessoas físicas como
-jurídicas. O script [`scripts/ieducar_seed.php`](scripts/ieducar_seed.php) corrige isso (cada
-aluno fica com o sobrenome da mãe e o do pai, todo nome é único e cada e-mail é derivado do
-nome no domínio reservado `.example`) e cria quatro servidores, um por situação da regra de
-professores:
+```json
+{"correlation_id": "6523ebed-…", "eventos": {"ieducar.turma.alterada": 21, "ieducar.servidor.alterado": 4, "ieducar.aluno.alterado": 210}}
+```
 
-| Servidor | Função | Turma | Resultado esperado no Moodle |
-|---|---|---|---|
-| Ana Paula Souza | Professor | 1 turma, 2 componentes | usuário criado |
-| Bruno Lima | Professor | 1 turma, todos os componentes (unidocente) | usuário criado |
-| Carla Mendes | Secretário escolar | — | não entra |
-| Diego Rocha | Professor | — | não entra |
+**3. Acompanhar as filas** na interface do RabbitMQ (http://localhost:15672,
+`integracao` / `integracao`, aba *Queues*): a fila `publicador` enche e esvazia.
 
-O `setup.sh` já roda `POST /sync/professores`, `POST /sync/turmas` e `POST /sync/alunos`
-(com `completo=true`) ao final; depois disso a sincronização periódica cuida das alterações.
-Com o `DemoSeeder` são criados 177 cursos (21 turmas × os componentes de cada série), Ana e
-Bruno são inscritos como professores nos cursos dos componentes que lecionam, e os 210 alunos
-viram usuários com 1.770 inscrições (10 alunos por turma × os componentes da série).
+**4. Seguir a sincronização pelos três serviços**, pelo correlation ID nos logs:
 
-## Acessos
+```bash
+docker compose logs detector sincronizador publicador | grep <correlation_id>
+```
 
-| Sistema            | URL                         | Credenciais padrão    |
-|--------------------|-----------------------------|-----------------------|
-| Integração (docs)  | http://localhost:8000/docs  | —                     |
-| i-Educar           | http://localhost            | `admin` / `123456789` |
-| Moodle             | http://localhost:8080       | `admin` / `admin123`  |
+**5. Conferir o resultado no Moodle**, direto no banco:
 
-### Endpoints da integração
+```bash
+./scripts/verificar.sh
+```
 
-| Método | Rota | Descrição |
+```
+usuários: 213   cursos: 177   inscrições: 1782
+nenhum duplicado
+```
+
+Os cursos aparecem em http://localhost:8080 (`admin` / `admin123`), na categoria
+**iEducar › 2026**.
+
+**6. Uma mudança incremental.** Altere algo no i-Educar (http://localhost, `admin` /
+`123456789`), por exemplo renomeie uma turma. No próximo ciclo (até 1 minuto, ou
+`curl -X POST localhost:8001/ciclos`) o detector publica só aquela turma e os cursos
+dela são renomeados no Moodle.
+
+**7. Métricas:** `curl localhost:8003/metrics | grep -E "mensagens_total|sincronizacao_segundos"`.
+
+## Cenários de falha
+
+```bash
+./scripts/falhas/cenario1-ieducar-fora.sh        # i-Educar fora do ar
+./scripts/falhas/cenario2-moodle-fora.sh 30      # Moodle fora por 30s (use 90 para ver a DLQ)
+./scripts/falhas/cenario3-resposta-perdida.sh    # Moodle cria, mas a resposta não chega
+./scripts/falhas/cenario4-reinicio.sh publicador # serviço morto no meio da sincronização
+```
+
+`PAUSAR=1` antes do comando faz o script esperar um Enter a cada passo. Explicações e
+saídas esperadas em [`docs/failure-scenarios.md`](docs/failure-scenarios.md).
+
+## Regras da integração (as mesmas do T1)
+
+| i-Educar | Moodle |
+|---|---|
+| Servidor ativo com vínculo com turma no ano letivo | Usuário `ieducar-servidor-<id>`, login pelo CPF |
+| Turma × componente curricular | Um curso `ieducar-turma-<turma>-componente-<componente>`, na categoria do ano |
+| Vínculo do professor com a turma e os componentes | Inscrição como `editingteacher` nos cursos desses componentes |
+| Aluno ativo e enturmado | Usuário `ieducar-aluno-<código>`, inscrito como `student` nos cursos da sua série, menos os componentes de que tem dispensa |
+
+- **Nada é apagado no Moodle:** quem deixa de ser professor ou aluno é suspenso, e o
+  curso de uma turma desativada (ou de um componente retirado) é ocultado.
+- **Identidade:** o vínculo com o i-Educar fica no `idnumber` do Moodle. Uma conta
+  criada à mão com o mesmo login e sem `idnumber` é adotada.
+- **E-mail:** a API do i-Educar não traz o e-mail do aluno; quem não tem e-mail recebe
+  `<idnumber>@sem-email.invalid`.
+
+**Dados de teste.** O `DemoSeeder` do i-Educar e o
+[`scripts/ieducar_seed.php`](scripts/ieducar_seed.php) criam 21 turmas, 210 alunos e
+quatro servidores:
+
+| Servidor | Situação | No Moodle |
 |---|---|---|
-| `GET`  | `/health` | Aplicação no ar |
-| `GET`  | `/health/dependencias` | Autenticação no i-Educar e no Moodle; escolas ativas e ano letivo |
-| `POST` | `/sync/{entidade}?completo=false` | Sincronização manual de `professores`, `turmas` ou `alunos`, nessa ordem; `completo=true` reenvia todos ao Moodle, mesmo sem mudança |
-| `GET`  | `/sync/execucoes` | Histórico das execuções (manuais e agendadas) |
-| `GET`  | `/professores` | Mapeamento servidor do i-Educar ↔ usuário do Moodle |
-| `GET`  | `/cursos?ano=` | Mapeamento turma × componente do i-Educar ↔ curso do Moodle |
-| `GET`  | `/alunos` | Mapeamento aluno do i-Educar ↔ usuário do Moodle |
+| Ana Paula Souza | professora de 1 turma, 2 componentes | usuário criado |
+| Bruno Lima | professor unidocente de 1 turma | usuário criado |
+| Carla Mendes | secretária | não entra |
+| Diego Rocha | professor sem turma (o cenário 3 dá uma turma a ele) | não entra |
+
+## APIs
+
+| Serviço | Rota | Descrição |
+|---|---|---|
+| todos | `GET /health` | no ar e conectado ao RabbitMQ (200) ou não (503) |
+| todos | `GET /metrics` | métricas no formato Prometheus |
+| detector | `POST /ciclos?completo=false` | roda um ciclo de detecção agora |
+| sincronizador | `GET /inscricoes` | inscrições pedidas, por papel |
+| sincronizador, publicador | `POST /dlq/reprocessar` | devolve as mensagens da DLQ à fila |
+| publicador | `POST /simular/resposta-perdida` | cenário 3: a próxima criação perde a resposta |
+
+Documentação interativa em `/docs` de cada serviço (ex.: http://localhost:8001/docs).
 
 ## Configuração
 
-Variáveis da aplicação de integração (serviço `integration` no `docker-compose.yml`):
+Variáveis do `docker-compose.yml` (podem ficar num `.env` na raiz):
 
 | Variável | Padrão | Descrição |
 |---|---|---|
-| `IEDUCAR_ACCESS_KEY` | `ieducar-access-key` | Chave da API do i-Educar. Deve ser igual a "Chave de acesso" em Configurações › Configurações do sistema (tabela `settings`, `legacy.apis.access_key`) |
-| `IEDUCAR_INSTITUICAO_ID` | `1` | Instituição no i-Educar |
-| `IEDUCAR_ESCOLA_ID` | — | Escola a sincronizar. Sem valor, usa as escolas ativas |
-| `IEDUCAR_ANO_LETIVO` | — | Ano letivo. Sem valor, usa o ano em andamento da escola |
-| `SYNC_INTERVAL_SECONDS` | `300` | Intervalo da sincronização periódica; `0` desativa |
-| `MOODLE_TOKEN` | — | Sobrescreve o token gerado pelo `moodle-setup` |
+| `IEDUCAR_ACCESS_KEY` | `ieducar-access-key` | Chave da API do i-Educar (Configurações › Configurações do sistema) |
+| `IEDUCAR_ESCOLA_ID`, `IEDUCAR_ANO_LETIVO` | — | Escola e ano; sem valor, as escolas ativas e o ano em andamento |
+| `DETECTOR_INTERVALO` | `60` | Segundos entre ciclos de detecção |
+| `MOODLE_TIMEOUT` | `10` | Timeout das chamadas ao Moodle (s) |
+| `DETECTOR_PORT`, `SINCRONIZADOR_PORT`, `PUBLICADOR_PORT`, `RABBITMQ_UI_PORT` | `8001`, `8002`, `8003`, `15672` | Portas no host |
 
-Variáveis do ambiente, que podem ficar num `.env` na raiz do projeto:
+## Desenvolvimento e deploy de um serviço
 
-| Variável                     | Padrão               |
-|------------------------------|----------------------|
-| `API_PORT`                   | `8000`               |
-| `MOODLE_HTTP_PORT`           | `8080`               |
-| `MOODLE_HTTPS_PORT`          | `8443`               |
-| `MOODLE_USERNAME`            | `admin`              |
-| `MOODLE_PASSWORD`            | `admin123`           |
-| `MOODLE_EMAIL`               | `admin@example.com`  |
-| `MOODLE_SITE_NAME`           | `Moodle`             |
-| `MOODLE_DATABASE_USER`       | `bn_moodle`          |
-| `MOODLE_DATABASE_PASSWORD`   | `moodle`             |
-| `MOODLE_DATABASE_NAME`       | `bitnami_moodle`     |
-
-As configurações do i-Educar (portas, banco, etc.) ficam em `i-educar/.env`.
-
-## Desenvolvimento
-
-Com hot reload dentro do Docker:
+Cada serviço é desenvolvido no próprio repositório (README de cada um), com testes
+que rodam sem rede:
 
 ```bash
-docker compose watch
+cd servicos/sincronizador
+uv sync && uv run pytest
 ```
 
-Ou localmente, fora do container:
+Para implantar **só aquele serviço** no ambiente, sem reiniciar os outros:
 
 ```bash
-uv sync
-uv run fastapi dev src/app/main.py
+docker compose up -d --build sincronizador
 ```
 
-Testes, lint e checagem de tipos:
+Ou, com uma versão publicada pelo CI do serviço (imagem no GitHub Container Registry):
 
 ```bash
-uv run pytest
-uv run ruff check .
-uv run ty check
+SINCRONIZADOR_IMAGEM=ghcr.io/<dono>/ieducar-moodle-sincronizador:v1.1.0 docker compose up -d sincronizador
 ```
 
-Os testes (`tests/`) rodam as sincronizações contra um i-Educar e um Moodle em memória
-(`tests/fakes.py`), que implementam as mesmas interfaces dos clientes HTTP, sem Docker.
-Cobrem a criação de usuários, cursos e inscrições, a ausência de duplicados ao repetir a
-execução ou perder o banco local, suspensões e ocultações, conflitos de login, falhas
-momentâneas do Moodle e lotes com um item inválido.
+Para fixar a versão nova no ambiente, mova o submodule e faça commit aqui:
+`git -C servicos/sincronizador checkout v1.1.0 && git add servicos/sincronizador`.
+
+Os serviços não compartilham código, e o contrato entre eles é o formato das
+mensagens (catálogo em [`docs/architecture.md`](docs/architecture.md#catálogo-de-mensagens)).
+Uma mudança incompatível num formato vira uma versão nova da mensagem (`.v2`).
 
 ## Estrutura
 
 ```
-.
-├── src/app/
-│   ├── main.py               # FastAPI: rotas e erros HTTP
-│   ├── config.py             # Variáveis de ambiente e dados do moodle-setup
-│   ├── domain.py             # Dados do i-Educar (servidor, turma, aluno...)
-│   ├── interfaces.py         # Protocolos IEducar e Moodle
-│   ├── db.py                 # SQLite: mapeamentos, inscrições e execuções
-│   ├── clients/ieducar.py    # IEducar sobre a API legada do i-Educar
-│   ├── clients/moodle.py     # Moodle sobre os Web Services REST
-│   └── sync/
-│       ├── service.py        # Registro dos casos, trava, histórico e agendamento
-│       ├── base.py           # Sincronizacao: escola, ano letivo e resultado
-│       ├── professores.py    # Caso 1: servidores com turma → usuários
-│       ├── turmas.py         # Caso 2: turma × componente → cursos e inscrições
-│       ├── alunos.py         # Caso 3: alunos enturmados → usuários e inscrições
-│       ├── usuarios.py       # Criar, adotar, atualizar e suspender usuários
-│       ├── inscricoes.py     # Inscrever e desinscrever pela diferença
-│       └── idempotencia.py   # Localizar antes de criar; lotes com reenvio um a um
-├── tests/                    # Cenários contra i-Educar e Moodle em memória
-├── moodle/setup_webservice.php   # Preparação do Moodle (serviço moodle-setup)
-├── setup.sh                  # Sobe e prepara todo o ambiente
-├── scripts/                  # Dados de teste
-├── i-educar/                 # Submodule do i-Educar (tag 2.11.0)
-├── i-educar-reports/         # Submodule do Módulo de Relatórios do i-Educar (branch 2.11)
-├── Dockerfile                # Imagem da aplicação de integração
-├── docker-compose.yml        # Orquestração: integração + i-Educar + Moodle
-└── ieducar.override.yml      # Ajustes sobre o compose do i-Educar
+docker-compose.yml       # ambiente completo
+setup.sh                 # sobe e prepara tudo
+servicos/                # os três serviços (submodules, um repositório cada)
+├── detector/            #   src/detector: ieducar.py (cliente) · deteccao.py (snapshot e eventos)
+├── sincronizador/       #   src/sincronizador: regras.py · sincronizacao.py (eventos → comandos)
+└── publicador/          #   src/publicador: moodle.py (cliente) · publicacao.py (procurar antes de criar)
+infra/rabbitmq/          # exchange, filas, retry e DLQ, criados quando o RabbitMQ sobe
+docs/                    # architecture.md, failure-scenarios.md, adr/
+scripts/                 # dados de teste, verificar.sh, falhas/ (cenários)
+moodle/                  # preparação do Moodle (serviço moodle-setup)
+i-educar/                # i-Educar (submodule)
 ```
+
+Dentro de cada serviço, `mensagem.py`, `broker.py`, `logs.py` e `api.py` são cópias do
+mesmo código de infraestrutura: formato das mensagens, RabbitMQ com retry e DLQ, logs
+JSON com correlation ID, e `/health` e `/metrics`.
 
 ## Solução de problemas
 
-- **`The container name "/ieducar-redis" is already in use`** — sobrou um i-Educar (ou
-  Moodle) de outro `docker compose`, com os mesmos nomes de container. Remova os antigos
-  (`docker rm -f <nome>`; os volumes de dados não são apagados) e rode o `setup.sh` de novo.
-- **`vendor does not exist and could not be created` / `plug-and-play.json: Permission
-  denied`** (Linux) — permissões do submodule montado; o `setup.sh` corrige
-  (`HOST_UID`/`HOST_GID` e dono de `packages/`). Veja as notas do passo a passo manual.
-
-- **Horizon em restart loop (`env: can't execute 'php'`)** — causado por quebras de linha
-  CRLF no checkout do Windows. Já tratado pelo `ieducar.override.yml`; para evitar o
-  problema em outros scripts, configure o submodule com
-  `git -C i-educar config core.autocrlf false` antes do checkout.
-- **Cadastro de turma com erro `Portabilis_Model_Report_TipoBoletim not found`** — o Módulo
-  de Relatórios não está ativo. Confira se o submodule `i-educar-reports` foi baixado
-  (`git submodule update --init`) e rode `composer plug-and-play`,
-  `artisan community:reports:install` e `vendor:publish --tag=reports-assets` no container `php`.
-- **`Chave de acesso inválida!` em `/health/dependencias`** — `IEDUCAR_ACCESS_KEY` difere da
-  chave configurada no i-Educar (Configurações › Configurações do sistema).
-- **`Nenhuma escola ativa` / `Nenhum ano letivo em andamento`** — cadastre a escola e inicie
-  o ano letivo no i-Educar, ou carregue o `DemoSeeder`.
-- **Portas em uso** — altere `DOCKER_NGINX_PORT`, `DOCKER_POSTGRES_PORT` etc. em
-  `i-educar/.env`, ou as variáveis da tabela acima.
+- **`The container name ... is already in use`:** sobrou um container de outro
+  compose com o mesmo nome; remova com `docker rm -f <nome>` e rode o `setup.sh` de novo.
+- **Ciclo com `Chave de acesso inválida!`:** `IEDUCAR_ACCESS_KEY` diferente da chave
+  configurada no i-Educar.
+- **`Nenhuma escola ativa` / `Nenhum ano letivo em andamento`:** cadastre a escola e
+  inicie o ano letivo no i-Educar, ou rode o `setup.sh`, que carrega os dados de teste.
+- **Mensagens paradas na DLQ** (ex.: depois de o Moodle ficar muito tempo fora):
+  `curl -X POST localhost:8003/dlq/reprocessar`.
 
 ## Autores
 

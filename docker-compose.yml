@@ -1,4 +1,6 @@
-# Ambiente completo: aplicação de integração + i-Educar (submodule) + Moodle.
+# Ambiente completo do T2: os três serviços de integração (submodules em servicos/,
+# cada um com repositório, versão e imagem próprios) + RabbitMQ + i-Educar
+# (submodule) + Moodle.
 #
 # O i-Educar é incluído a partir do compose do próprio submodule, então os
 # serviços dele (nginx, fpm, php, horizon, postgres, redis) continuam sendo
@@ -13,12 +15,36 @@ include:
 
 services:
 
-  integration:
-    container_name: integration-app
-    build: .
+  # --- Integração: três serviços (cada um no seu repositório) e o broker ----
+  #
+  #   i-Educar ──▶ detector ──eventos──▶ sincronizador ──comandos──▶ publicador ──▶ Moodle
+  #                            (RabbitMQ)                 (RabbitMQ)
+
+  rabbitmq:
+    container_name: rabbitmq
+    image: rabbitmq:4.1.4-management
+    hostname: rabbitmq
     ports:
-      - ${API_PORT:-8000}:8000
+      - ${RABBITMQ_UI_PORT:-15672}:15672
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+      - ./infra/rabbitmq/rabbitmq.conf:/etc/rabbitmq/conf.d/20-integracao.conf:ro
+      - ./infra/rabbitmq/definitions.json:/etc/rabbitmq/definitions.json:ro
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+
+  detector:
+    container_name: detector
+    # Repositório próprio (submodule em servicos/detector). Para usar uma versão publicada
+    # em vez de construir: DETECTOR_IMAGEM=ghcr.io/<dono>/ieducar-moodle-detector:v1.0.0
+    image: ${DETECTOR_IMAGEM:-ieducar-moodle-detector:local}
+    build: ./servicos/detector
     environment:
+      RABBITMQ_URL: amqp://integracao:integracao@rabbitmq:5672/
+      DATABASE_PATH: /data/detector.db
       IEDUCAR_URL: http://nginx
       # Deve ser igual a "Chave de acesso" em Configurações > Configurações do sistema
       # do i-Educar (tabela settings, chave legacy.apis.access_key).
@@ -26,27 +52,61 @@ services:
       IEDUCAR_INSTITUICAO_ID: ${IEDUCAR_INSTITUICAO_ID:-1}
       IEDUCAR_ESCOLA_ID: ${IEDUCAR_ESCOLA_ID:-}
       IEDUCAR_ANO_LETIVO: ${IEDUCAR_ANO_LETIVO:-}
-      MOODLE_URL: http://moodle:8080
-      MOODLE_SETUP_FILE: /shared/moodle.json
-      DATABASE_PATH: /data/integration.db
-      SYNC_INTERVAL_SECONDS: ${SYNC_INTERVAL_SECONDS:-300}
-      MOODLE_TOKEN: ${MOODLE_TOKEN:-}
+      INTERVALO_SEGUNDOS: ${DETECTOR_INTERVALO:-60}
+    ports:
+      - ${DETECTOR_PORT:-8001}:8000
     volumes:
-      - integration_data:/data
-      - integration_shared:/shared:ro
+      - detector_data:/data
     depends_on:
+      rabbitmq:
+        condition: service_healthy
       nginx:
         condition: service_started
+    restart: unless-stopped
+
+  sincronizador:
+    container_name: sincronizador
+    # Repositório próprio (submodule em servicos/sincronizador). Para usar uma versão publicada
+    # em vez de construir: SINCRONIZADOR_IMAGEM=ghcr.io/<dono>/ieducar-moodle-sincronizador:v1.0.0
+    image: ${SINCRONIZADOR_IMAGEM:-ieducar-moodle-sincronizador:local}
+    build: ./servicos/sincronizador
+    environment:
+      RABBITMQ_URL: amqp://integracao:integracao@rabbitmq:5672/
+      DATABASE_PATH: /data/sincronizador.db
+    ports:
+      - ${SINCRONIZADOR_PORT:-8002}:8000
+    volumes:
+      - sincronizador_data:/data
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    restart: unless-stopped
+
+  publicador:
+    container_name: publicador
+    # Repositório próprio (submodule em servicos/publicador). Para usar uma versão publicada
+    # em vez de construir: PUBLICADOR_IMAGEM=ghcr.io/<dono>/ieducar-moodle-publicador:v1.0.0
+    image: ${PUBLICADOR_IMAGEM:-ieducar-moodle-publicador:local}
+    build: ./servicos/publicador
+    environment:
+      RABBITMQ_URL: amqp://integracao:integracao@rabbitmq:5672/
+      DATABASE_PATH: /data/publicador.db
+      MOODLE_URL: http://moodle:8080
+      MOODLE_SETUP_FILE: /shared/moodle.json
+      MOODLE_TIMEOUT: ${MOODLE_TIMEOUT:-10}
+    ports:
+      - ${PUBLICADOR_PORT:-8003}:8000
+    volumes:
+      - publicador_data:/data
+      - integration_shared:/shared:ro
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
       moodle-setup:
         condition: service_completed_successfully
     restart: unless-stopped
-    develop:
-      watch:
-        - action: sync+restart
-          path: ./src
-          target: /app/src
-        - action: rebuild
-          path: ./uv.lock
+
+  # --- Moodle ----------------------------------------------------------------
 
   moodle-mariadb:
     container_name: moodle-mariadb
@@ -120,8 +180,11 @@ services:
     restart: "no"
 
 volumes:
+  rabbitmq_data:
+  detector_data:
+  sincronizador_data:
+  publicador_data:
   moodle_mariadb:
   moodle_data:
   moodledata_data:
-  integration_data:
   integration_shared:
