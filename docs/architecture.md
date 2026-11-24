@@ -44,7 +44,7 @@ o i-Educar, o Moodle, a documentação e os cenários de falha
 ieducar-moodle-integration/        (orquestração)
 ├── docker-compose.yml             sobe tudo
 ├── infra/rabbitmq/                exchange, filas, retry e DLQ (carregados ao subir)
-├── servicos/detector/       ──▶   repositório ieducar-moodle-detector (submodule, v1.2.0)
+├── servicos/detector/       ──▶   repositório ieducar-moodle-detector (submodule, v1.2.1)
 ├── servicos/sincronizador/  ──▶   repositório ieducar-moodle-sincronizador (submodule, v1.2.0)
 ├── servicos/publicador/     ──▶   repositório ieducar-moodle-publicador (submodule, v1.2.0)
 ├── i-educar/, moodle/             sistemas integrados
@@ -70,9 +70,10 @@ adaptador de entrada ──▶ caso de uso (aplicacao/) ──▶ domínio (domi
 ## Uma sincronização
 
 1. **Detector:** lê turmas, servidores e alunos do ano letivo e calcula um hash do
-   estado de cada um. Publica `ieducar.<tipo>.alterado.v1` para os que mudaram (todos,
-   com `POST /ciclos?completo=true`) e `ieducar.<tipo>.removido.v1` para os que
-   sumiram. Depois grava o snapshot. Todas as mensagens do ciclo levam o mesmo
+   estado de cada um. Publica um evento de alteração para os que mudaram (todos, com
+   `POST /ciclos?completo=true`) e um de remoção para os que sumiram, com os nomes do
+   catálogo abaixo (turma no feminino: `ieducar.turma.alterada.v1`,
+   `ieducar.turma.removida.v1`). Depois grava o snapshot. Todas as mensagens do ciclo levam o mesmo
    `correlation_id`.
 2. **Sincronizador:** consome um evento por vez, aplica as regras
    ([`regras.py`](../servicos/sincronizador/src/sincronizador/dominio/regras.py)) e publica comandos de estado
