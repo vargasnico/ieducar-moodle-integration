@@ -1,3 +1,5 @@
+# ENTREGA DO T2 NA BRANCH `t2`
+
 # i-Educar ↔ Moodle Integration
 
 Aplicação de integração em **FastAPI** entre dois monólitos educacionais de código aberto: o
