@@ -73,6 +73,10 @@ services:
     environment:
       RABBITMQ_URL: amqp://integracao:integracao@rabbitmq:5672/
       DATABASE_PATH: /data/sincronizador.db
+      # MODO DEMONSTRAÇÃO: retry a cada 3s (padrão dos serviços: 10s), para os cenários
+      # de falha caberem na apresentação. Depois de RETRY_TENTATIVAS falhas, DLQ.
+      RETRY_ATRASO: ${RETRY_ATRASO:-3}
+      RETRY_TENTATIVAS: ${RETRY_TENTATIVAS:-5}
     ports:
       - ${SINCRONIZADOR_PORT:-8002}:8000
     volumes:
@@ -91,6 +95,10 @@ services:
     environment:
       RABBITMQ_URL: amqp://integracao:integracao@rabbitmq:5672/
       DATABASE_PATH: /data/publicador.db
+      # MODO DEMONSTRAÇÃO: retry a cada 3s (padrão dos serviços: 10s), para os cenários
+      # de falha caberem na apresentação. Depois de RETRY_TENTATIVAS falhas, DLQ.
+      RETRY_ATRASO: ${RETRY_ATRASO:-3}
+      RETRY_TENTATIVAS: ${RETRY_TENTATIVAS:-5}
       MOODLE_URL: http://moodle:8080
       MOODLE_SETUP_FILE: /shared/moodle.json
       MOODLE_TIMEOUT: ${MOODLE_TIMEOUT:-10}

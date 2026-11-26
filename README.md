@@ -115,11 +115,15 @@ dela são renomeados no Moodle. Sem usar a interface:
 
 ```bash
 ./scripts/falhas/cenario1-ieducar-fora.sh        # i-Educar fora do ar
-./scripts/falhas/cenario2-moodle-fora.sh 30      # Moodle fora por 30s (use 90 para ver a DLQ)
+./scripts/falhas/cenario2-moodle-fora.sh retry   # Moodle fora, volta antes da DLQ (dlq: até ir para a DLQ)
 ./scripts/falhas/cenario3-resposta-perdida.sh    # Moodle cria, mas a resposta não chega
 ./scripts/falhas/cenario4-reinicio.sh publicador # serviço morto no meio da sincronização
 ./scripts/falhas/dlq-versao-antiga.sh            # DLQ reprocessada não desfaz alteração mais nova
 ```
+
+O compose sobe em **modo demonstração**, com o retry a cada 3s (o padrão dos serviços
+é 10s), para os cenários serem rápidos; `RETRY_ATRASO=10 docker compose up -d
+sincronizador publicador` volta ao valor normal.
 
 `PAUSAR=1` antes do comando faz o script esperar um Enter a cada passo. Explicações e
 saídas esperadas em [`docs/failure-scenarios.md`](docs/failure-scenarios.md).
@@ -174,6 +178,8 @@ Variáveis do `docker-compose.yml` (podem ficar num `.env` na raiz):
 | `IEDUCAR_ESCOLA_ID`, `IEDUCAR_ANO_LETIVO` | — | Escola e ano; sem valor, as escolas ativas e o ano em andamento |
 | `DETECTOR_INTERVALO` | `60` | Segundos entre ciclos de detecção |
 | `MOODLE_TIMEOUT` | `10` | Timeout das chamadas ao Moodle (s) |
+| `RETRY_ATRASO` | `3` (modo demonstração; padrão dos serviços: `10`) | Segundos na fila de retry antes de tentar de novo (máximo 10) |
+| `RETRY_TENTATIVAS` | `5` | Falhas até a mensagem ir para a DLQ |
 | `DETECTOR_PORT`, `SINCRONIZADOR_PORT`, `PUBLICADOR_PORT`, `RABBITMQ_UI_PORT` | `8001`, `8002`, `8003`, `15672` | Portas no host |
 
 ## Desenvolvimento e deploy de um serviço

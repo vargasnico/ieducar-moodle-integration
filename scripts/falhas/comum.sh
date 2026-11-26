@@ -48,3 +48,30 @@ alterar_ieducar() {
 }
 
 logs() { docker compose logs --since "$2" "$1" | grep -E "$3" | tail -n "${4:-5}" | cut -c1-230; }
+
+# Mensagens numa fila (ex.: contar_fila publicador.dlq).
+contar_fila() {
+  docker compose exec -T rabbitmq rabbitmqctl -q list_queues name messages | awk -v f="$1" '$1 == f { print $2 }'
+}
+
+# Atraso da fila de retry configurado no publicador (RETRY_ATRASO, padrão 10s).
+atraso_retry() { docker compose exec -T publicador printenv RETRY_ATRASO 2>/dev/null || echo 10; }
+
+# O Moodle "cai" para a integração: o container é desconectado da rede do compose.
+# Mais rápido que parar o container (que leva 20-40s para subir de novo): a falha é
+# imediata (o nome "moodle" deixa de existir) e a volta é instantânea.
+REDE_MOODLE=""
+moodle_fora() {
+  REDE_MOODLE=$(docker inspect moodle -f '{{range $rede, $_ := .NetworkSettings.Networks}}{{$rede}}{{end}}')
+  docker network disconnect "$REDE_MOODLE" moodle
+  echo "    Moodle desconectado da rede ($REDE_MOODLE): fora do ar para a integração"
+  # Se o script for interrompido no meio, reconecta ao sair.
+  trap moodle_volta EXIT
+}
+moodle_volta() {
+  [[ -n $REDE_MOODLE ]] || return 0
+  docker network connect --alias moodle "$REDE_MOODLE" moodle 2>/dev/null || true
+  echo "    Moodle reconectado à rede"
+  REDE_MOODLE=""
+  trap - EXIT
+}

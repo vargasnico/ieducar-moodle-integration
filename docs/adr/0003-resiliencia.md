@@ -20,9 +20,12 @@ Moodle cria mas a resposta se perde, e um serviço reinicia no meio.
      de criação. Se o Moodle criou e a resposta se perdeu, a nova tentativa encontra
      o que foi criado em vez de tentar criar de novo.
 3. **Fila de retry e DLQ no RabbitMQ.** Se as tentativas acabarem, a mensagem vai
-   para `<fila>.retry`, uma fila sem consumidor com TTL de 10s que a devolve à fila
-   principal. Enquanto isso as outras mensagens seguem. Depois de 5 falhas a
-   mensagem vai para `<fila>.dlq` e fica lá até `POST /dlq/reprocessar`.
+   para `<fila>.retry`, uma fila sem consumidor que a devolve à fila principal depois
+   de `RETRY_ATRASO` segundos (padrão 10). Enquanto isso as outras mensagens seguem.
+   Depois de `RETRY_TENTATIVAS` falhas (padrão 5) a mensagem vai para `<fila>.dlq` e
+   fica lá até `POST /dlq/reprocessar`. A fila tem TTL de 10s como teto e cada
+   mensagem leva a própria expiração, então o atraso muda sem recriar a fila (o
+   compose usa 3s no modo demonstração).
 4. **Idempotência: procurar antes de criar.** Todo usuário e curso criado pela
    integração leva um `idnumber` (ex.: `ieducar-aluno-20`). O publicador procura por
    ele antes de criar e, se existe, só atualiza. Inscrever ou desinscrever duas vezes
@@ -57,8 +60,8 @@ Moodle cria mas a resposta se perde, e um serviço reinicia no meio.
 
 - Os quatro cenários têm resposta e podem ser reproduzidos
   ([`failure-scenarios.md`](../failure-scenarios.md)).
-- Uma queda do Moodle maior que ~1 minuto (5 tentativas × 10s) manda as mensagens
-  para a DLQ; elas precisam ser reprocessadas à mão depois que ele volta.
+- Uma queda do Moodle maior que ~1 minuto (5 tentativas × 10s, no padrão) manda as
+  mensagens para a DLQ; elas precisam ser reprocessadas à mão depois que ele volta.
 - Um erro permanente (ex.: login que já pertence a outra conta) também passa pelas 5
   tentativas antes de ir para a DLQ.
 - Reprocessar a DLQ é sempre seguro: o que ainda vale é aplicado e o que ficou velho é

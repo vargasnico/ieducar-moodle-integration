@@ -9,7 +9,7 @@ espera um Enter entre os passos, para apresentar.
 | # | Falha | Resposta da arquitetura | Script |
 |---|---|---|---|
 | 1 | i-Educar fora do ar | Timeout + 3 tentativas com backoff; o ciclo falha sem publicar nada; o próximo ciclo encontra tudo o que mudou | `cenario1-ieducar-fora.sh` |
-| 2 | Moodle fora do ar | Os comandos voltam pela fila de retry (10s) sem travar os outros; depois de 5 falhas vão para a DLQ, que é reprocessada | `cenario2-moodle-fora.sh [segundos]` |
+| 2 | Moodle fora do ar | Os comandos voltam pela fila de retry sem travar os outros; depois de 5 falhas vão para a DLQ, que é reprocessada | `cenario2-moodle-fora.sh [retry\|dlq]` |
 | 3 | O Moodle cria, mas a resposta não chega | O retry repete a operação inteira: procura pelo `idnumber`, acha o que foi criado e só atualiza | `cenario3-resposta-perdida.sh` |
 | 4 | Serviço reinicia no meio | Ack manual: o que não foi confirmado volta para a fila; tratar de novo não duplica | `cenario4-reinicio.sh [serviço]` |
 | + | DLQ reprocessada depois de uma alteração mais nova | A mensagem antiga é descartada (versão por entidade) e o Moodle fica com a mais nova | `dlq-versao-antiga.sh` |
@@ -48,25 +48,32 @@ do i-Educar, renomeia uma turma direto no banco, roda um ciclo (que falha), sobe
 - O detector e o sincronizador continuam funcionando; os comandos se acumulam na fila
   do publicador (duráveis).
 - O publicador tenta cada comando 3 vezes com backoff. Se falhar, publica a mensagem
-  em `publicador.retry`, onde ela espera 10s e volta, e passa para a próxima. Uma
-  mensagem com problema não trava a fila.
-- Depois de 5 falhas (~1 minuto) a mensagem vai para `publicador.dlq`. Com o Moodle de
-  volta, `POST localhost:8003/dlq/reprocessar` devolve as mensagens à fila.
+  em `publicador.retry`, onde ela espera `RETRY_ATRASO` segundos e volta, e passa para
+  a próxima. Uma mensagem com problema não trava a fila.
+- Depois de `RETRY_TENTATIVAS` falhas a mensagem vai para `publicador.dlq`. Com o
+  Moodle de volta, `POST localhost:8003/dlq/reprocessar` devolve as mensagens à fila.
 
-**Reproduzir:** `./scripts/falhas/cenario2-moodle-fora.sh 30`. O número é por quantos
-segundos o Moodle fica parado: com 30 a fila de retry resolve sozinha; com 90 as
-mensagens vão para a DLQ e o script as reprocessa.
+> **Modo demonstração.** O `docker-compose.yml` sobe o sincronizador e o publicador
+> com `RETRY_ATRASO=3` (o padrão dos serviços é 10s) para os cenários caberem na
+> apresentação: a DLQ aparece em ~25s em vez de ~1 minuto. Para o valor normal:
+> `RETRY_ATRASO=10 docker compose up -d sincronizador publicador`.
+
+**Reproduzir:** `./scripts/falhas/cenario2-moodle-fora.sh retry` (o Moodle volta antes
+das tentativas acabarem, ~20s) ou `./scripts/falhas/cenario2-moodle-fora.sh dlq` (fica
+fora até as mensagens irem para a DLQ e o script as reprocessa, ~45s). O Moodle "cai"
+sendo desconectado da rede do compose (`docker network disconnect`): a falha é
+imediata e a volta é instantânea, sem esperar o container subir de novo. Também dá para
+reproduzir com `docker compose stop moodle`, só que mais devagar.
 
 ```
-# Moodle fora por 30s
-==> 3. Os comandos falham e esperam na fila de retry (Moodle fora por 30s)
-    fila publicador.retry: 9 mensagem(ns)
-    "msg": "moodle.curso.sincronizar.v1 falhou (tentativa 3 de 5), nova tentativa em 10s: ConnectError(…)"
+# retry
+==> 3. Os comandos falham e esperam na fila de retry (volta a cada 3s)
+    "msg": "moodle.curso.sincronizar.v1 falhou (tentativa 2 de 5), nova tentativa em 3s: ConnectError(…)"
 ==> 4. Moodle de volta
-    usuários: 213   cursos: 177   inscrições: 1782
+    usuários: 213   cursos: 177   inscrições: 1781
     nenhum duplicado
 
-# Moodle fora por 90s
+# dlq
     fila publicador.dlq: 9 mensagem(ns)
     "msg": "moodle.curso.sincronizar.v1 falhou 5 vezes, enviada à DLQ: ConnectError(…)"
 ==> 4. Moodle de volta

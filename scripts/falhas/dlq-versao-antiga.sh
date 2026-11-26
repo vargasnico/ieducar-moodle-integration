@@ -8,26 +8,18 @@
 #    aplicou uma versão mais nova desses cursos e descarta a antiga. O Moodle fica com B.
 source "$(dirname "$0")/comum.sh"
 nome() { mariadb "SELECT fullname FROM mdl_course WHERE idnumber = 'ieducar-turma-3-componente-8'"; }
-na_dlq() {
-  docker compose exec -T rabbitmq rabbitmqctl -q list_queues name messages | awk '$1 == "publicador.dlq" { print $2 }'
-}
-moodle_no_ar() {
-  until docker compose exec -T moodle /opt/bitnami/php/bin/php -r \
-    "exit(@file_get_contents('http://localhost:8080/login/index.php') === false ? 1 : 0);"; do sleep 2; done
-}
 
 etapa "1. Moodle fora; turma renomeada (versão A); esperando os comandos irem para a DLQ"
 echo "    Moodle agora: $(nome)"
-docker compose stop moodle
+moodle_fora
 alterar_ieducar renomear-turma
 ciclo
-until (( $(na_dlq) >= 9 )); do sleep 3; done
+until (( $(contar_fila publicador.dlq) >= 9 )); do sleep 2; done
 filas
 pausa
 
 etapa "2. Moodle de volta; turma renomeada de novo (versão B), aplicada normalmente"
-docker compose start moodle
-moodle_no_ar
+moodle_volta
 alterar_ieducar renomear-turma
 ciclo
 esperar_filas

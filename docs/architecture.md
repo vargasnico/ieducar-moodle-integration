@@ -44,9 +44,9 @@ o i-Educar, o Moodle, a documentação e os cenários de falha
 ieducar-moodle-integration/        (orquestração)
 ├── docker-compose.yml             sobe tudo
 ├── infra/rabbitmq/                exchange, filas, retry e DLQ (carregados ao subir)
-├── servicos/detector/       ──▶   repositório ieducar-moodle-detector (submodule, v1.2.1)
-├── servicos/sincronizador/  ──▶   repositório ieducar-moodle-sincronizador (submodule, v1.2.0)
-├── servicos/publicador/     ──▶   repositório ieducar-moodle-publicador (submodule, v1.2.0)
+├── servicos/detector/       ──▶   repositório ieducar-moodle-detector (submodule, v1.3.0)
+├── servicos/sincronizador/  ──▶   repositório ieducar-moodle-sincronizador (submodule, v1.3.0)
+├── servicos/publicador/     ──▶   repositório ieducar-moodle-publicador (submodule, v1.3.0)
 ├── i-educar/, moodle/             sistemas integrados
 └── docs/, scripts/                arquitetura e cenários de falha
 ```
@@ -98,8 +98,10 @@ servidores, 210 alunos), que viram ~2.170 comandos.
 | `sincronizador` | `ieducar.#` | sincronizador (1 por vez, na ordem) | `sincronizador.retry`, `sincronizador.dlq` |
 | `publicador` | `moodle.#` | publicador (até 10 em paralelo) | `publicador.retry`, `publicador.dlq` |
 
-`*.retry` não tem consumidor: a mensagem espera 10s (TTL) e volta para a fila
-principal. Depois de 5 falhas ela vai para `*.dlq`, e `POST /dlq/reprocessar` a
+`*.retry` não tem consumidor: a mensagem espera `RETRY_ATRASO` segundos (padrão 10;
+3 no modo demonstração do compose) e volta para a fila principal. A fila tem TTL de
+10s, o teto, e cada mensagem leva a própria expiração. Depois de `RETRY_TENTATIVAS`
+falhas (padrão 5) ela vai para `*.dlq`, e `POST /dlq/reprocessar` a
 devolve à fila. Reprocessar é seguro: cada mensagem leva o início do ciclo que a
 gerou (`ciclo_iniciado_em`), e uma mensagem mais antiga que a última aplicada à mesma
 entidade é descartada ([ADR 0003](adr/0003-resiliencia.md), item 7). A topologia é criada quando o RabbitMQ sobe
@@ -182,7 +184,7 @@ serviço):
 | Comunicação | Chamadas de função | Eventos e comandos versionados no RabbitMQ |
 | Detectar mudanças | Cada caso lia tudo e comparava com o mapeamento local | Um serviço só para isso: compara o hash do estado com o snapshot e publica só o que mudou |
 | Ordem entre os casos | Fixa: professores → turmas → alunos | Detector publica turmas primeiro; o que chegar antes da hora volta pela fila de retry |
-| Moodle fora do ar | A execução falhava; tudo era refeito na próxima | Os comandos esperam na fila (retry a cada 10s, DLQ depois de 5 falhas); detector e sincronizador continuam |
+| Moodle fora do ar | A execução falhava; tudo era refeito na próxima | Os comandos esperam na fila (retry configurável, padrão a cada 10s; DLQ depois de 5 falhas); detector e sincronizador continuam |
 | i-Educar fora do ar | A execução falhava | O ciclo falha sem publicar nada; o próximo encontra tudo o que mudou |
 | Timeout / retry | 30s / nenhum | 3s+10s / 3 tentativas com backoff + fila de retry + DLQ |
 | Resposta perdida após criar | "Procurar antes de criar", mas o item ficava com erro até a próxima execução | O mesmo "procurar antes de criar", dentro do retry: resolve na hora |
